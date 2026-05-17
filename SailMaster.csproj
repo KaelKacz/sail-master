@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <TargetFramework>netstandard2.0</TargetFramework>
-    <AssemblyName>com.kaelkirk.SailMaster</AssemblyName>
+    <AssemblyName>SailMaster</AssemblyName>
     <Product>SailMaster</Product>
     <Version>0.1.0</Version>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
