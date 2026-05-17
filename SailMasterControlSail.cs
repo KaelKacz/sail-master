@@ -15,14 +15,7 @@ namespace SailMaster
         private GPButtonRopeWinch hoistButton;
         private PurchasableBoat boat;
         private bool reverseReefing;
-        private HoistCommand currentCommand = HoistCommand.None;
-
-        private enum HoistCommand
-        {
-            None,
-            Raise,
-            Lower
-        }
+        private float? targetDeployedAmount;
 
         public static void CommandGroup(SailCategory? category)
         {
@@ -33,25 +26,61 @@ namespace SailMaster
 
             if (targets.Count == 0)
             {
-                SailMasterMain.Logger?.LogDebug($"No controllable sails found for {CategoryName(category)}.");
+                SailMasterMain.Logger?.LogDebug($"No controllable sails found for {FormatCategoryName(category)}.");
                 return;
             }
 
-            HoistCommand command = targets.Any(controller => controller.IsDeployed)
-                ? HoistCommand.Lower
-                : HoistCommand.Raise;
-
-            foreach (var target in targets)
-            {
-                target.currentCommand = command;
-            }
-
-            SailMasterMain.Logger?.LogDebug($"{command} {targets.Count} {CategoryName(category)} sail(s).");
+            CommandSails(targets, FormatCategoryName(category));
         }
 
-        private static string CategoryName(SailCategory? category)
+        public static void CommandSails(IEnumerable<SailMasterControlSail> sails, string groupName)
+        {
+            var targets = sails
+                .Where(controller => controller != null && controller.IsReady && controller.CanControl)
+                .ToList();
+
+            if (targets.Count == 0)
+            {
+                SailMasterMain.Logger?.LogDebug($"No controllable sails found for {groupName}.");
+                return;
+            }
+
+            float targetAmount = targets.Any(controller => controller.IsDeployed) ? 0f : 1f;
+            foreach (var target in targets)
+            {
+                target.SetTargetDeployedAmount(targetAmount);
+            }
+
+            string command = targetAmount <= 0f ? "Lower" : "Raise";
+            SailMasterMain.Logger?.LogDebug($"{command} {targets.Count} {groupName} sail(s).");
+        }
+
+        public static List<SailMasterControlSail> GetControllableSails()
+        {
+            return controllers
+                .Where(controller => controller != null && controller.IsReady && controller.CanControl)
+                .OrderBy(controller => controller.CategoryName)
+                .ThenBy(controller => controller.DisplayName)
+                .ThenBy(controller => controller.GetInstanceID())
+                .ToList();
+        }
+
+        private static string FormatCategoryName(SailCategory? category)
         {
             return category.HasValue ? category.Value.ToString() : "all";
+        }
+
+        public string DisplayName => SafeSailName();
+
+        public string CategoryName => sail == null ? "unknown" : sail.category.ToString();
+
+        public float DeployedAmount
+        {
+            get
+            {
+                if (!IsReady) return 0f;
+                return reverseReefing ? 1f - hoistWinch.currentLength : hoistWinch.currentLength;
+            }
         }
 
         private bool IsReady => sail != null && hoistWinch != null && hoistButton != null && boat != null;
@@ -124,28 +153,41 @@ namespace SailMaster
 
         private void Update()
         {
-            if (!IsReady || currentCommand == HoistCommand.None) return;
+            if (!IsReady || !targetDeployedAmount.HasValue) return;
 
-            bool raising = currentCommand == HoistCommand.Raise;
-            PerformHoist(raising);
+            MoveTowardTarget();
         }
 
-        private void PerformHoist(bool raising)
+        private void MoveTowardTarget()
         {
-            float previousLength = hoistWinch.currentLength;
-            float direction = GetLengthDirection(raising);
+            float target = Mathf.Clamp01(targetDeployedAmount.Value);
+            float current = DeployedAmount;
+            float next = Mathf.MoveTowards(current, target, SailMasterMain.hoistingSpeed.Value);
 
-            Traverse.Create(hoistButton).Field("currentInput").SetValue(direction < 0f ? 25f : -25f);
+            ApplyDeployedAmount(next);
+
+            float visualInput = next >= current ? GetLengthDirection(true) : GetLengthDirection(false);
+            Traverse.Create(hoistButton).Field("currentInput").SetValue(visualInput < 0f ? 25f : -25f);
             hoistButton.ApplyRotation();
 
-            hoistWinch.currentLength += direction * SailMasterMain.hoistingSpeed.Value;
+            if (Mathf.Approximately(next, target))
+            {
+                targetDeployedAmount = null;
+            }
+        }
+
+        public void SetTargetDeployedAmount(float amount)
+        {
+            if (!IsReady) return;
+
+            targetDeployedAmount = Mathf.Clamp01(amount);
+        }
+
+        private void ApplyDeployedAmount(float amount)
+        {
+            hoistWinch.currentLength = reverseReefing ? 1f - amount : amount;
             hoistWinch.currentLength = Mathf.Clamp01(hoistWinch.currentLength);
             hoistWinch.changed = true;
-
-            if (Mathf.Approximately(previousLength, hoistWinch.currentLength) || HasReachedTarget(raising))
-            {
-                currentCommand = HoistCommand.None;
-            }
         }
 
         private float GetLengthDirection(bool raising)
@@ -156,16 +198,6 @@ namespace SailMaster
             }
 
             return raising ? 1f : -1f;
-        }
-
-        private bool HasReachedTarget(bool raising)
-        {
-            if (reverseReefing)
-            {
-                return raising ? hoistWinch.currentLength <= 0f : hoistWinch.currentLength >= 1f;
-            }
-
-            return raising ? hoistWinch.currentLength >= 1f : hoistWinch.currentLength <= 0f;
         }
 
         private string SafeSailName()
