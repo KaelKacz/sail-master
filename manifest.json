@@ -1,0 +1,9 @@
+{
+  "name": "SailMaster",
+  "version_number": "0.1.0",
+  "website_url": "",
+  "description": "Raise and lower Sailwind sails by sail type.",
+  "dependencies": [
+    "BepInEx-BepInExPack-5.4.2100"
+  ]
+}
