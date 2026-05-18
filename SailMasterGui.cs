@@ -8,14 +8,14 @@ namespace SailMaster
     public class SailMasterGui : MonoBehaviour
     {
         private const int groupCount = 6;
+        private const float minWindowWidth = 660f;
+        private const float minWindowHeight = 520f;
+        private const float screenMargin = 20f;
 
         private readonly HashSet<SailMasterControlSail>[] groups = new HashSet<SailMasterControlSail>[groupCount];
-        private readonly Dictionary<SailMasterControlSail, float> sailTargets = new Dictionary<SailMasterControlSail, float>();
-        private Rect windowRect = new Rect(40f, 80f, 560f, 520f);
+        private Rect windowRect = new Rect(40f, 80f, minWindowWidth, minWindowHeight);
         private Vector2 scroll;
         private int selectedGroup;
-        private float groupTarget = 1f;
-        private float allTarget = 1f;
         private bool visible;
         private bool hadCursorState;
         private CursorLockMode previousCursorLockState;
@@ -92,8 +92,20 @@ namespace SailMaster
             }
 
             GUI.Button(new Rect(0f, 0f, Screen.width, Screen.height), string.Empty, GUIStyle.none);
+            FitWindowToScreen();
             windowRect = GUILayout.Window(GetInstanceID(), windowRect, DrawWindow, "SailMaster");
             Input.ResetInputAxes();
+        }
+
+        private void FitWindowToScreen()
+        {
+            float maxWidth = Mathf.Max(320f, Screen.width - (screenMargin * 2f));
+            float maxHeight = Mathf.Max(240f, Screen.height - (screenMargin * 2f));
+
+            windowRect.width = Mathf.Min(Mathf.Max(windowRect.width, minWindowWidth), maxWidth);
+            windowRect.height = Mathf.Min(Mathf.Max(windowRect.height, minWindowHeight), maxHeight);
+            windowRect.x = Mathf.Clamp(windowRect.x, screenMargin, Mathf.Max(screenMargin, Screen.width - windowRect.width - screenMargin));
+            windowRect.y = Mathf.Clamp(windowRect.y, screenMargin, Mathf.Max(screenMargin, Screen.height - windowRect.height - screenMargin));
         }
 
         private static void UnlockCursor()
@@ -105,12 +117,60 @@ namespace SailMaster
         private static bool IsShortcutKeyDownEvent(KeyboardShortcut shortcut)
         {
             Event current = Event.current;
-            if (current == null || current.type != EventType.KeyDown || current.keyCode != shortcut.MainKey)
+            if (current == null || shortcut.MainKey == KeyCode.None)
             {
                 return false;
             }
 
-            return shortcut.Modifiers.All(Input.GetKey);
+            if (current.type == EventType.KeyDown && current.keyCode == shortcut.MainKey)
+            {
+                return EventModifiersMatchShortcut(current.modifiers, shortcut);
+            }
+
+            if (current.type == EventType.MouseDown && MouseButtonMatchesShortcut(current.button, shortcut.MainKey))
+            {
+                return EventModifiersMatchShortcut(current.modifiers, shortcut);
+            }
+
+            return false;
+        }
+
+        private static bool EventModifiersMatchShortcut(EventModifiers eventModifiers, KeyboardShortcut shortcut)
+        {
+            return ModifierMatches(eventModifiers, EventModifiers.Control, shortcut, KeyCode.LeftControl, KeyCode.RightControl)
+                && ModifierMatches(eventModifiers, EventModifiers.Alt, shortcut, KeyCode.LeftAlt, KeyCode.RightAlt)
+                && ModifierMatches(eventModifiers, EventModifiers.Shift, shortcut, KeyCode.LeftShift, KeyCode.RightShift)
+                && ModifierMatches(eventModifiers, EventModifiers.Command, shortcut, KeyCode.LeftCommand, KeyCode.RightCommand);
+        }
+
+        private static bool ModifierMatches(EventModifiers eventModifiers, EventModifiers eventModifier, KeyboardShortcut shortcut, params KeyCode[] keys)
+        {
+            bool eventHasModifier = (eventModifiers & eventModifier) != 0;
+            bool shortcutHasModifier = keys.Contains(shortcut.MainKey) || shortcut.Modifiers.Any(keys.Contains);
+            return eventHasModifier == shortcutHasModifier;
+        }
+
+        private static bool MouseButtonMatchesShortcut(int button, KeyCode key)
+        {
+            switch (key)
+            {
+                case KeyCode.Mouse0:
+                    return button == 0;
+                case KeyCode.Mouse1:
+                    return button == 1;
+                case KeyCode.Mouse2:
+                    return button == 2;
+                case KeyCode.Mouse3:
+                    return button == 3;
+                case KeyCode.Mouse4:
+                    return button == 4;
+                case KeyCode.Mouse5:
+                    return button == 5;
+                case KeyCode.Mouse6:
+                    return button == 6;
+                default:
+                    return false;
+            }
         }
 
         private bool HandleHotkeys()
@@ -207,18 +267,20 @@ namespace SailMaster
             }
 
             GUILayout.Label($"G{selectedGroup + 1}: {groups[selectedGroup].Count}", GUILayout.Width(60f));
+
             if (GUILayout.Button("Min", GUILayout.Width(48f)))
             {
                 SetGroupAmount(0f);
             }
 
-            groupTarget = GUILayout.HorizontalSlider(groupTarget, 0f, 1f);
-            GUILayout.Label($"{groupTarget:P0}", GUILayout.Width(42f));
-
-            if (GUILayout.Button("Set", GUILayout.Width(48f)))
+            float amount = GetAverageDeployedAmount(groups[selectedGroup]);
+            float newAmount = DrawClickableSlider(amount, 0f, 1f);
+            if (!Mathf.Approximately(amount, newAmount))
             {
-                SetGroupAmount(groupTarget);
+                SetGroupAmount(newAmount);
             }
+
+            GUILayout.Label($"{amount:P0}", GUILayout.Width(42f));
 
             if (GUILayout.Button("Max", GUILayout.Width(48f)))
             {
@@ -252,8 +314,8 @@ namespace SailMaster
                 SetSailTarget(sail, 0f);
             }
 
-            float amount = GetSailTarget(sail);
-            float newAmount = GUILayout.HorizontalSlider(amount, 0f, 1f, GUILayout.Width(150f));
+            float amount = sail.DeployedAmount;
+            float newAmount = DrawClickableSlider(amount, 0f, 1f, GUILayout.Width(150f));
             if (!Mathf.Approximately(amount, newAmount))
             {
                 SetSailTarget(sail, newAmount);
@@ -269,22 +331,58 @@ namespace SailMaster
             GUILayout.EndHorizontal();
         }
 
+        private static float DrawClickableSlider(float value, float leftValue, float rightValue, params GUILayoutOption[] options)
+        {
+            Rect rect = GUILayoutUtility.GetRect(GUIContent.none, GUI.skin.horizontalSlider, options);
+            int controlId = GUIUtility.GetControlID(FocusType.Passive, rect);
+            Event current = Event.current;
+            if (current != null)
+            {
+                if (current.type == EventType.MouseDown && rect.Contains(current.mousePosition))
+                {
+                    GUIUtility.hotControl = controlId;
+                    value = SliderValueAtMouse(rect, leftValue, rightValue, current.mousePosition.x);
+                    GUI.changed = true;
+                    current.Use();
+                }
+                else if (current.type == EventType.MouseDrag && GUIUtility.hotControl == controlId)
+                {
+                    value = SliderValueAtMouse(rect, leftValue, rightValue, current.mousePosition.x);
+                    GUI.changed = true;
+                    current.Use();
+                }
+                else if (current.type == EventType.MouseUp && GUIUtility.hotControl == controlId)
+                {
+                    GUIUtility.hotControl = 0;
+                    current.Use();
+                }
+            }
+
+            return GUI.HorizontalSlider(rect, value, leftValue, rightValue);
+        }
+
+        private static float SliderValueAtMouse(Rect rect, float leftValue, float rightValue, float mouseX)
+        {
+            return Mathf.Lerp(leftValue, rightValue, Mathf.InverseLerp(rect.xMin, rect.xMax, mouseX));
+        }
+
         private void DrawAllControls(List<SailMasterControlSail> sails)
         {
             GUILayout.BeginHorizontal();
-            GUILayout.Label("All visible", GUILayout.Width(82f));
+            GUILayout.Label("All Sails", GUILayout.Width(82f));
             if (GUILayout.Button("Min", GUILayout.Width(60f)))
             {
                 SetAllAmount(sails, 0f);
             }
 
-            allTarget = GUILayout.HorizontalSlider(allTarget, 0f, 1f, GUILayout.Width(150f));
-            GUILayout.Label($"{allTarget:P0}", GUILayout.Width(42f));
-
-            if (GUILayout.Button("Set", GUILayout.Width(60f)))
+            float amount = GetAverageDeployedAmount(sails);
+            float newAmount = DrawClickableSlider(amount, 0f, 1f, GUILayout.Width(150f));
+            if (!Mathf.Approximately(amount, newAmount))
             {
-                SetAllAmount(sails, allTarget);
+                SetAllAmount(sails, newAmount);
             }
+
+            GUILayout.Label($"{amount:P0}", GUILayout.Width(42f));
 
             if (GUILayout.Button("Max", GUILayout.Width(60f)))
             {
@@ -292,8 +390,47 @@ namespace SailMaster
             }
 
             GUILayout.FlexibleSpace();
-            GUILayout.Label("Toggle GUI: F7", GUILayout.Width(95f));
+            GUILayout.Label($"Toggle GUI: {FormatShortcut(SailMasterMain.toggleGuiKey.Value)}", GUILayout.Width(150f));
             GUILayout.EndHorizontal();
+        }
+
+        private static string FormatShortcut(KeyboardShortcut shortcut)
+        {
+            if (shortcut.MainKey == KeyCode.None) return "None";
+
+            return string.Join(" + ", shortcut.Modifiers
+                .Select(FormatKey)
+                .Concat(new[] { FormatKey(shortcut.MainKey) })
+                .ToArray());
+        }
+
+        private static string FormatKey(KeyCode key)
+        {
+            switch (key)
+            {
+                case KeyCode.LeftControl:
+                case KeyCode.RightControl:
+                    return "Ctrl";
+                case KeyCode.LeftAlt:
+                case KeyCode.RightAlt:
+                    return "Alt";
+                case KeyCode.LeftShift:
+                case KeyCode.RightShift:
+                    return "Shift";
+                case KeyCode.LeftCommand:
+                case KeyCode.RightCommand:
+                    return "Cmd";
+                default:
+                    return key.ToString();
+            }
+        }
+
+        private static float GetAverageDeployedAmount(IEnumerable<SailMasterControlSail> sails)
+        {
+            var validSails = sails.Where(sail => sail != null).ToList();
+            if (validSails.Count == 0) return 0f;
+
+            return Mathf.Clamp01(validSails.Average(sail => sail.DeployedAmount));
         }
 
         private void SetGroupAmount(float amount)
@@ -318,21 +455,9 @@ namespace SailMaster
             }
         }
 
-        private float GetSailTarget(SailMasterControlSail sail)
-        {
-            if (!sailTargets.TryGetValue(sail, out float target))
-            {
-                target = sail.DeployedAmount;
-                sailTargets[sail] = target;
-            }
-
-            return target;
-        }
-
         private void SetSailTarget(SailMasterControlSail sail, float amount)
         {
             amount = Mathf.Clamp01(amount);
-            sailTargets[sail] = amount;
             sail.SetTargetDeployedAmount(amount);
         }
 
@@ -344,13 +469,6 @@ namespace SailMaster
                 group.RemoveWhere(sail => sail == null || !visibleSails.Contains(sail));
             }
 
-            foreach (var sail in sailTargets.Keys.ToList())
-            {
-                if (sail == null || !visibleSails.Contains(sail))
-                {
-                    sailTargets.Remove(sail);
-                }
-            }
         }
     }
 }
