@@ -28,3 +28,6 @@ Desktop.ini
 # Local game assemblies
 Assembly-CSharp.dll
 SailwindModdingHelper.dll
+
+# Local agent handoff notes
+AGENTS.md
