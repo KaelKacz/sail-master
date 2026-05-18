@@ -197,7 +197,7 @@ namespace SailMaster
                 groups[selectedGroup].Clear();
             }
 
-            if (GUILayout.Button("Visible", GUILayout.Width(70f)))
+            if (GUILayout.Button("All", GUILayout.Width(70f)))
             {
                 groups[selectedGroup].Clear();
                 foreach (var sail in sails)
