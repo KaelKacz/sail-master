@@ -11,11 +11,13 @@ namespace SailMaster
         private const float minWindowWidth = 660f;
         private const float minWindowHeight = 520f;
         private const float screenMargin = 20f;
+        private static readonly string[] tabLabels = { "Raise/Lower", "Trim" };
 
         private readonly HashSet<SailMasterControlSail>[] groups = new HashSet<SailMasterControlSail>[groupCount];
         private Rect windowRect = new Rect(40f, 80f, minWindowWidth, minWindowHeight);
         private Vector2 scroll;
         private int selectedGroup;
+        private int selectedTab;
         private bool visible;
         private bool hadCursorState;
         private CursorLockMode previousCursorLockState;
@@ -217,6 +219,7 @@ namespace SailMaster
             GUILayout.EndHorizontal();
 
             DrawGroupHeader(sails);
+            selectedTab = GUILayout.Toolbar(selectedTab, tabLabels);
 
             GUILayout.Space(8f);
             if (sails.Count == 0)
@@ -226,15 +229,14 @@ namespace SailMaster
                 return;
             }
 
-            scroll = GUILayout.BeginScrollView(scroll, GUILayout.Height(360f));
-            foreach (var sail in sails)
+            if (selectedTab == 0)
             {
-                DrawSailRow(sail);
+                DrawRaiseLowerTab(sails);
             }
-            GUILayout.EndScrollView();
-
-            GUILayout.Space(8f);
-            DrawAllControls(sails);
+            else
+            {
+                DrawTrimTab(sails);
+            }
 
             GUI.DragWindow();
         }
@@ -267,7 +269,30 @@ namespace SailMaster
             }
 
             GUILayout.Label($"G{selectedGroup + 1}: {groups[selectedGroup].Count}", GUILayout.Width(60f));
+            GUILayout.FlexibleSpace();
+            GUILayout.EndHorizontal();
+        }
 
+        private void DrawRaiseLowerTab(List<SailMasterControlSail> sails)
+        {
+            DrawGroupHoistControls();
+
+            GUILayout.Space(8f);
+            scroll = GUILayout.BeginScrollView(scroll, GUILayout.Height(320f));
+            foreach (var sail in sails)
+            {
+                DrawSailRow(sail);
+            }
+            GUILayout.EndScrollView();
+
+            GUILayout.Space(8f);
+            DrawAllControls(sails);
+        }
+
+        private void DrawGroupHoistControls()
+        {
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("Group Sails", GUILayout.Width(82f));
             if (GUILayout.Button("Min", GUILayout.Width(48f)))
             {
                 SetGroupAmount(0f);
@@ -289,24 +314,24 @@ namespace SailMaster
             GUILayout.EndHorizontal();
         }
 
+        private void DrawTrimTab(List<SailMasterControlSail> sails)
+        {
+            scroll = GUILayout.BeginScrollView(scroll, GUILayout.Height(360f));
+            foreach (var sail in sails)
+            {
+                DrawTrimRow(sail);
+            }
+            GUILayout.EndScrollView();
+
+            GUILayout.Space(8f);
+            DrawFooter();
+        }
+
         private void DrawSailRow(SailMasterControlSail sail)
         {
             GUILayout.BeginHorizontal();
 
-            bool inGroup = groups[selectedGroup].Contains(sail);
-            bool newInGroup = GUILayout.Toggle(inGroup, "", GUILayout.Width(22f));
-            if (newInGroup != inGroup)
-            {
-                if (newInGroup)
-                {
-                    groups[selectedGroup].Add(sail);
-                }
-                else
-                {
-                    groups[selectedGroup].Remove(sail);
-                }
-            }
-
+            DrawGroupMembershipToggle(sail);
             GUILayout.Label($"{sail.DisplayName} ({sail.CategoryName})", GUILayout.Width(210f));
 
             if (GUILayout.Button("Min", GUILayout.Width(48f)))
@@ -329,6 +354,31 @@ namespace SailMaster
             }
 
             GUILayout.EndHorizontal();
+        }
+
+        private void DrawTrimRow(SailMasterControlSail sail)
+        {
+            GUILayout.BeginHorizontal();
+            DrawGroupMembershipToggle(sail);
+            GUILayout.Label($"{sail.DisplayName} ({sail.CategoryName})", GUILayout.Width(210f));
+            GUILayout.Label("Trim controls pending");
+            GUILayout.EndHorizontal();
+        }
+
+        private void DrawGroupMembershipToggle(SailMasterControlSail sail)
+        {
+            bool inGroup = groups[selectedGroup].Contains(sail);
+            bool newInGroup = GUILayout.Toggle(inGroup, "", GUILayout.Width(22f));
+            if (newInGroup == inGroup) return;
+
+            if (newInGroup)
+            {
+                groups[selectedGroup].Add(sail);
+            }
+            else
+            {
+                groups[selectedGroup].Remove(sail);
+            }
         }
 
         private static float DrawClickableSlider(float value, float leftValue, float rightValue, params GUILayoutOption[] options)
@@ -390,8 +440,13 @@ namespace SailMaster
             }
 
             GUILayout.FlexibleSpace();
-            GUILayout.Label($"Toggle GUI: {FormatShortcut(SailMasterMain.toggleGuiKey.Value)}", GUILayout.Width(150f));
+            DrawFooter();
             GUILayout.EndHorizontal();
+        }
+
+        private void DrawFooter()
+        {
+            GUILayout.Label($"Toggle GUI: {FormatShortcut(SailMasterMain.toggleGuiKey.Value)}", GUILayout.Width(150f));
         }
 
         private static string FormatShortcut(KeyboardShortcut shortcut)
