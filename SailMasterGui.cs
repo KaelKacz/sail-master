@@ -9,15 +9,34 @@ namespace SailMaster
     {
         private const int groupCount = 6;
         private const float minWindowWidth = 660f;
-        private const float minWindowHeight = 520f;
+        private const float minWindowHeight = 360f;
         private const float screenMargin = 20f;
+        private const float desiredWindowHeight = 700f;
+        private const float minSailListHeight = 120f;
+        private const float windowChromeHeight = 200f;
+        private const float sailListHeightBuffer = 28f;
+        private const float raiseLowerRowHeight = 32f;
+        private const float trimHeaderHeight = 26f;
+        private const float trimControlHeight = 24f;
+        private const float rowBoxPaddingHeight = 10f;
+        private const float sliderLayoutHeight = 24f;
+        private const float sliderVisualHeight = 16f;
+        private static readonly Color windowBackgroundColor = new Color(0.25f, 0.25f, 0.25f, 0.95f);
+        private static readonly Color sailRowColor = new Color(0.14f, 0.14f, 0.14f, 0.95f);
         private static readonly string[] tabLabels = { "Raise/Lower", "Trim" };
 
         private readonly HashSet<SailMasterControlSail>[] groups = new HashSet<SailMasterControlSail>[groupCount];
-        private Rect windowRect = new Rect(40f, 80f, minWindowWidth, minWindowHeight);
+        private Rect windowRect = new Rect(40f, 80f, minWindowWidth, desiredWindowHeight);
         private Vector2 scroll;
+        private GUIStyle windowStyle;
+        private Texture2D windowBackgroundTexture;
         private int selectedGroup;
         private int selectedTab;
+        private int lastHeightSailCount = -1;
+        private int lastHeightTrimRows = -1;
+        private int lastHeightSelectedTab = -1;
+        private int lastHeightScreenWidth = -1;
+        private int lastHeightScreenHeight = -1;
         private bool visible;
         private bool hadCursorState;
         private CursorLockMode previousCursorLockState;
@@ -62,6 +81,12 @@ namespace SailMaster
                 Cursor.lockState = previousCursorLockState;
                 Cursor.visible = previousCursorVisible;
             }
+
+            if (windowBackgroundTexture != null)
+            {
+                Destroy(windowBackgroundTexture);
+                windowBackgroundTexture = null;
+            }
         }
 
         private void Update()
@@ -94,9 +119,38 @@ namespace SailMaster
             }
 
             GUI.Button(new Rect(0f, 0f, Screen.width, Screen.height), string.Empty, GUIStyle.none);
+            EnsureWindowStyle();
+            var sails = SailMasterControlSail.GetControllableSails();
+            PruneMissingSails(sails);
             FitWindowToScreen();
-            windowRect = GUILayout.Window(GetInstanceID(), windowRect, DrawWindow, "SailMaster");
+            FitWindowHeightToContentIfNeeded(sails);
+            FitWindowToScreen();
+            windowRect = GUILayout.Window(GetInstanceID(), windowRect, DrawWindow, "SailMaster", windowStyle);
             Input.ResetInputAxes();
+        }
+
+        private void EnsureWindowStyle()
+        {
+            if (windowStyle != null) return;
+
+            windowBackgroundTexture = MakeTexture(windowBackgroundColor);
+            windowStyle = new GUIStyle(GUI.skin.window)
+            {
+                padding = new RectOffset(12, 12, 24, 12),
+                border = new RectOffset(1, 1, 1, 1)
+            };
+            windowStyle.normal.background = windowBackgroundTexture;
+            windowStyle.onNormal.background = windowBackgroundTexture;
+            windowStyle.normal.textColor = Color.white;
+            windowStyle.onNormal.textColor = Color.white;
+        }
+
+        private static Texture2D MakeTexture(Color color)
+        {
+            var texture = new Texture2D(1, 1);
+            texture.SetPixel(0, 0, color);
+            texture.Apply();
+            return texture;
         }
 
         private void FitWindowToScreen()
@@ -278,10 +332,10 @@ namespace SailMaster
             DrawGroupHoistControls();
 
             GUILayout.Space(8f);
-            scroll = GUILayout.BeginScrollView(scroll, GUILayout.Height(320f));
-            foreach (var sail in sails)
+            scroll = GUILayout.BeginScrollView(scroll, GUILayout.Height(GetSailListHeight(sails)));
+            for (int i = 0; i < sails.Count; i++)
             {
-                DrawSailRow(sail);
+                DrawSailRow(sails[i], i);
             }
             GUILayout.EndScrollView();
 
@@ -314,21 +368,102 @@ namespace SailMaster
             GUILayout.EndHorizontal();
         }
 
-        private void DrawTrimTab(List<SailMasterControlSail> sails)
+        private void FitWindowHeightToContentIfNeeded(List<SailMasterControlSail> sails)
         {
-            scroll = GUILayout.BeginScrollView(scroll, GUILayout.Height(360f));
+            int trimRows = GetTrimRowCount(sails);
+            if (lastHeightSailCount == sails.Count &&
+                lastHeightTrimRows == trimRows &&
+                lastHeightSelectedTab == selectedTab &&
+                lastHeightScreenWidth == Screen.width &&
+                lastHeightScreenHeight == Screen.height)
+            {
+                return;
+            }
+
+            lastHeightSailCount = sails.Count;
+            lastHeightTrimRows = trimRows;
+            lastHeightSelectedTab = selectedTab;
+            lastHeightScreenWidth = Screen.width;
+            lastHeightScreenHeight = Screen.height;
+
+            FitWindowHeightToContent(sails);
+        }
+
+        private void FitWindowHeightToContent(List<SailMasterControlSail> sails)
+        {
+            float maxHeight = Mathf.Max(minWindowHeight, Screen.height - (screenMargin * 2f));
+            float contentHeight = windowChromeHeight + GetSailListContentHeight(sails) + sailListHeightBuffer;
+            windowRect.height = Mathf.Clamp(contentHeight, minWindowHeight, maxHeight);
+            windowRect.y = Mathf.Clamp(windowRect.y, screenMargin, Mathf.Max(screenMargin, Screen.height - windowRect.height - screenMargin));
+        }
+
+        private float GetSailListHeight(List<SailMasterControlSail> sails)
+        {
+            float maxListHeight = Mathf.Max(minSailListHeight, windowRect.height - windowChromeHeight);
+            return Mathf.Min(GetSailListContentHeight(sails) + sailListHeightBuffer, maxListHeight);
+        }
+
+        private float GetSailListContentHeight(List<SailMasterControlSail> sails)
+        {
+            if (selectedTab == 0)
+            {
+                return Mathf.Max(minSailListHeight, sails.Count * raiseLowerRowHeight);
+            }
+
+            float height = GetTrimRowCount(sails) * trimControlHeight;
+            height += sails.Count * (trimHeaderHeight + rowBoxPaddingHeight);
+
+            return Mathf.Max(minSailListHeight, height);
+        }
+
+        private static int GetTrimRowCount(List<SailMasterControlSail> sails)
+        {
+            int trimRows = 0;
             foreach (var sail in sails)
             {
-                DrawTrimRow(sail);
+                trimRows += Mathf.Max(1, sail.TrimControls.Count);
+            }
+
+            return trimRows;
+        }
+
+        private void DrawTrimTab(List<SailMasterControlSail> sails)
+        {
+            DrawGroupTrimControls();
+
+            GUILayout.Space(8f);
+            scroll = GUILayout.BeginScrollView(scroll, GUILayout.Height(GetSailListHeight(sails)));
+            for (int i = 0; i < sails.Count; i++)
+            {
+                DrawTrimRow(sails[i], i);
             }
             GUILayout.EndScrollView();
 
             GUILayout.Space(8f);
-            DrawFooter();
+            DrawAllTrimControls(sails);
         }
 
-        private void DrawSailRow(SailMasterControlSail sail)
+        private void DrawGroupTrimControls()
         {
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("Group Sails", GUILayout.Width(82f));
+            if (GUILayout.RepeatButton("Pull", GUILayout.Width(70f)))
+            {
+                ApplyTrim(groups[selectedGroup], true);
+            }
+
+            if (GUILayout.RepeatButton("Release", GUILayout.Width(70f)))
+            {
+                ApplyTrim(groups[selectedGroup], false);
+            }
+
+            GUILayout.FlexibleSpace();
+            GUILayout.EndHorizontal();
+        }
+
+        private void DrawSailRow(SailMasterControlSail sail, int rowIndex)
+        {
+            BeginSailRow(rowIndex);
             GUILayout.BeginHorizontal();
 
             DrawGroupMembershipToggle(sail);
@@ -354,15 +489,93 @@ namespace SailMaster
             }
 
             GUILayout.EndHorizontal();
+            EndSailRow();
         }
 
-        private void DrawTrimRow(SailMasterControlSail sail)
+        private void DrawTrimRow(SailMasterControlSail sail, int rowIndex)
         {
+            BeginSailRow(rowIndex);
+            GUILayout.BeginVertical();
+
             GUILayout.BeginHorizontal();
             DrawGroupMembershipToggle(sail);
-            GUILayout.Label($"{sail.DisplayName} ({sail.CategoryName})", GUILayout.Width(210f));
-            GUILayout.Label("Trim controls pending");
+            GUILayout.Label($"{sail.DisplayName} ({sail.CategoryName})");
+            DrawEfficiencyLabel(sail.Efficiency);
             GUILayout.EndHorizontal();
+
+            if (sail.TrimControls.Count == 0)
+            {
+                GUILayout.BeginHorizontal();
+                GUILayout.Space(26f);
+                GUILayout.Label("No trim controls found");
+                GUILayout.EndHorizontal();
+            }
+            else
+            {
+                foreach (var trimControl in sail.TrimControls)
+                {
+                    DrawTrimControl(trimControl);
+                }
+            }
+
+            GUILayout.EndVertical();
+            EndSailRow();
+        }
+
+        private void BeginSailRow(int rowIndex)
+        {
+            Color previousColor = GUI.color;
+            GUI.color = sailRowColor;
+            GUILayout.BeginVertical(GUI.skin.box);
+            GUI.color = previousColor;
+        }
+
+        private void EndSailRow()
+        {
+            GUILayout.EndVertical();
+        }
+
+        private void DrawTrimControl(SailMasterControlSail.TrimControl trimControl)
+        {
+            GUILayout.BeginHorizontal();
+            GUILayout.Space(26f);
+            GUILayout.Label(trimControl.Label, GUILayout.Width(70f));
+            if (GUILayout.RepeatButton("Pull", GUILayout.Width(70f)))
+            {
+                trimControl.Pull();
+            }
+
+            float amount = trimControl.Amount;
+            float newAmount = DrawClickableSlider(amount, 0f, 1f, GUILayout.Width(150f));
+            if (!Mathf.Approximately(amount, newAmount))
+            {
+                trimControl.SetAmount(newAmount);
+            }
+
+            if (GUILayout.RepeatButton("Release", GUILayout.Width(70f)))
+            {
+                trimControl.Release();
+            }
+
+            GUILayout.Label($"{amount:P0}", GUILayout.Width(42f));
+            GUILayout.EndHorizontal();
+        }
+
+        private void DrawEfficiencyLabel(float? efficiency)
+        {
+            Color previousColor = GUI.color;
+            GUI.color = GetEfficiencyColor(efficiency);
+            GUILayout.Label(efficiency.HasValue ? $"Eff {efficiency.Value:F0}%" : "Eff --", GUILayout.Width(70f));
+            GUI.color = previousColor;
+        }
+
+        private static Color GetEfficiencyColor(float? efficiency)
+        {
+            if (!efficiency.HasValue) return Color.gray;
+            if (efficiency.Value < 0f) return Color.red;
+            if (efficiency.Value < 40f) return new Color(1f, 0.35f, 0.25f);
+            if (efficiency.Value < 70f) return Color.yellow;
+            return Color.green;
         }
 
         private void DrawGroupMembershipToggle(SailMasterControlSail sail)
@@ -383,21 +596,25 @@ namespace SailMaster
 
         private static float DrawClickableSlider(float value, float leftValue, float rightValue, params GUILayoutOption[] options)
         {
-            Rect rect = GUILayoutUtility.GetRect(GUIContent.none, GUI.skin.horizontalSlider, options);
-            int controlId = GUIUtility.GetControlID(FocusType.Passive, rect);
+            Rect layoutRect = GUILayoutUtility.GetRect(0f, 10000f, sliderLayoutHeight, sliderLayoutHeight, GUI.skin.horizontalSlider, options);
+            Rect sliderRect = layoutRect;
+            sliderRect.y += (layoutRect.height - sliderVisualHeight) * 0.5f;
+            sliderRect.height = sliderVisualHeight;
+
+            int controlId = GUIUtility.GetControlID(FocusType.Passive, layoutRect);
             Event current = Event.current;
             if (current != null)
             {
-                if (current.type == EventType.MouseDown && rect.Contains(current.mousePosition))
+                if (current.type == EventType.MouseDown && layoutRect.Contains(current.mousePosition))
                 {
                     GUIUtility.hotControl = controlId;
-                    value = SliderValueAtMouse(rect, leftValue, rightValue, current.mousePosition.x);
+                    value = SliderValueAtMouse(layoutRect, leftValue, rightValue, current.mousePosition.x);
                     GUI.changed = true;
                     current.Use();
                 }
                 else if (current.type == EventType.MouseDrag && GUIUtility.hotControl == controlId)
                 {
-                    value = SliderValueAtMouse(rect, leftValue, rightValue, current.mousePosition.x);
+                    value = SliderValueAtMouse(layoutRect, leftValue, rightValue, current.mousePosition.x);
                     GUI.changed = true;
                     current.Use();
                 }
@@ -408,7 +625,7 @@ namespace SailMaster
                 }
             }
 
-            return GUI.HorizontalSlider(rect, value, leftValue, rightValue);
+            return GUI.HorizontalSlider(sliderRect, value, leftValue, rightValue);
         }
 
         private static float SliderValueAtMouse(Rect rect, float leftValue, float rightValue, float mouseX)
@@ -437,6 +654,25 @@ namespace SailMaster
             if (GUILayout.Button("Max", GUILayout.Width(60f)))
             {
                 SetAllAmount(sails, 1f);
+            }
+
+            GUILayout.FlexibleSpace();
+            DrawFooter();
+            GUILayout.EndHorizontal();
+        }
+
+        private void DrawAllTrimControls(List<SailMasterControlSail> sails)
+        {
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("All Sails", GUILayout.Width(82f));
+            if (GUILayout.RepeatButton("Pull", GUILayout.Width(70f)))
+            {
+                ApplyTrim(sails, true);
+            }
+
+            if (GUILayout.RepeatButton("Release", GUILayout.Width(70f)))
+            {
+                ApplyTrim(sails, false);
             }
 
             GUILayout.FlexibleSpace();
@@ -514,6 +750,30 @@ namespace SailMaster
         {
             amount = Mathf.Clamp01(amount);
             sail.SetTargetDeployedAmount(amount);
+        }
+
+        private void ApplyTrim(IEnumerable<SailMasterControlSail> sails, bool pull)
+        {
+            foreach (var sail in sails.ToList())
+            {
+                if (sail == null)
+                {
+                    groups[selectedGroup].Remove(sail);
+                    continue;
+                }
+
+                foreach (var trimControl in sail.TrimControls)
+                {
+                    if (pull)
+                    {
+                        trimControl.Pull();
+                    }
+                    else
+                    {
+                        trimControl.Release();
+                    }
+                }
+            }
         }
 
         private void PruneMissingSails(List<SailMasterControlSail> sails)
