@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using BepInEx.Configuration;
 using UnityEngine;
@@ -18,12 +19,13 @@ namespace SailMaster
         private const float raiseLowerRowHeight = 32f;
         private const float trimHeaderHeight = 26f;
         private const float trimControlHeight = 24f;
+        private const float navigationContentHeight = 430f;
         private const float rowBoxPaddingHeight = 10f;
         private const float sliderLayoutHeight = 24f;
         private const float sliderVisualHeight = 16f;
         private static readonly Color windowBackgroundColor = new Color(0.25f, 0.25f, 0.25f, 0.95f);
         private static readonly Color sailRowColor = new Color(0.14f, 0.14f, 0.14f, 0.95f);
-        private static readonly string[] tabLabels = { "Raise/Lower", "Trim" };
+        private static readonly string[] tabLabels = { "Raise/Lower", "Trim", "Navigation" };
 
         private readonly HashSet<SailMasterControlSail>[] groups = new HashSet<SailMasterControlSail>[groupCount];
         private Rect windowRect = new Rect(40f, 80f, minWindowWidth, desiredWindowHeight);
@@ -41,6 +43,9 @@ namespace SailMaster
         private bool hadCursorState;
         private CursorLockMode previousCursorLockState;
         private bool previousCursorVisible;
+        private string headingInput = string.Empty;
+        private string routeJsonInput = string.Empty;
+        private string navigationMessage = string.Empty;
 
         public bool Visible
         {
@@ -276,7 +281,7 @@ namespace SailMaster
             selectedTab = GUILayout.Toolbar(selectedTab, tabLabels);
 
             GUILayout.Space(8f);
-            if (sails.Count == 0)
+            if (selectedTab != 2 && sails.Count == 0)
             {
                 GUILayout.Label("No controllable sails detected on the current ship.");
                 GUI.DragWindow();
@@ -287,9 +292,13 @@ namespace SailMaster
             {
                 DrawRaiseLowerTab(sails);
             }
-            else
+            else if (selectedTab == 1)
             {
                 DrawTrimTab(sails);
+            }
+            else
+            {
+                DrawNavigationTab();
             }
 
             GUI.DragWindow();
@@ -410,6 +419,11 @@ namespace SailMaster
                 return Mathf.Max(minSailListHeight, sails.Count * raiseLowerRowHeight);
             }
 
+            if (selectedTab == 2)
+            {
+                return navigationContentHeight;
+            }
+
             float height = GetTrimRowCount(sails) * trimControlHeight;
             height += sails.Count * (trimHeaderHeight + rowBoxPaddingHeight);
 
@@ -459,6 +473,146 @@ namespace SailMaster
 
             GUILayout.FlexibleSpace();
             GUILayout.EndHorizontal();
+        }
+
+        private void DrawNavigationTab()
+        {
+            var navigation = SailMasterNavigationController.GetCurrent();
+            if (navigation == null || !navigation.IsReady)
+            {
+                GUILayout.Label("No rudder or steering wheel detected on the current ship.");
+                DrawFooter();
+                return;
+            }
+
+            GUILayout.BeginVertical(GUI.skin.box);
+            GUILayout.Label($"Heading {navigation.CurrentHeading:F0} deg    Rudder {navigation.RudderAngle:F0} deg");
+            GUILayout.Label($"Mode: {GetNavigationModeLabel(navigation)}");
+            GUILayout.Label(navigation.Status);
+            GUILayout.Label(navigation.DebugStatus);
+            GUILayout.Label($"Log {navigation.DebugLogPath}");
+            GUILayout.EndVertical();
+
+            GUILayout.Space(8f);
+            GUILayout.BeginVertical(GUI.skin.box);
+            GUILayout.Label("Rudder");
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button("Port", GUILayout.Width(70f)))
+            {
+                navigation.NudgeManualRudder(-0.1f);
+            }
+
+            float rudderInput = navigation.CurrentRudderInput;
+            float newRudderInput = DrawClickableSlider(rudderInput, -1f, 1f, GUILayout.Width(220f));
+            if (!Mathf.Approximately(rudderInput, newRudderInput))
+            {
+                navigation.SetManualRudder(newRudderInput);
+            }
+
+            if (GUILayout.Button("Center", GUILayout.Width(70f)))
+            {
+                navigation.CenterRudder();
+            }
+
+            if (GUILayout.Button("Starboard", GUILayout.Width(82f)))
+            {
+                navigation.NudgeManualRudder(0.1f);
+            }
+
+            GUILayout.Label($"{navigation.CurrentRudderInput:P0}", GUILayout.Width(50f));
+            GUILayout.EndHorizontal();
+            GUILayout.Label($"Target {navigation.TargetRudderInput:P0}");
+            GUILayout.EndVertical();
+
+            GUILayout.Space(8f);
+            GUILayout.BeginVertical(GUI.skin.box);
+            GUILayout.Label("Heading Lock");
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("Heading", GUILayout.Width(60f));
+            if (string.IsNullOrWhiteSpace(headingInput))
+            {
+                headingInput = navigation.TargetHeading.ToString("F0", CultureInfo.InvariantCulture);
+            }
+
+            headingInput = GUILayout.TextField(headingInput, GUILayout.Width(80f));
+            if (GUILayout.Button("Current", GUILayout.Width(70f)))
+            {
+                headingInput = navigation.CurrentHeading.ToString("F0", CultureInfo.InvariantCulture);
+            }
+
+            if (GUILayout.Button("Lock", GUILayout.Width(70f)))
+            {
+                if (float.TryParse(headingInput, NumberStyles.Float, CultureInfo.InvariantCulture, out float heading))
+                {
+                    navigation.EnableHeadingLock(heading);
+                    navigationMessage = $"Heading lock enabled at {navigation.TargetHeading:F0} deg.";
+                }
+                else
+                {
+                    navigationMessage = "Enter a numeric heading.";
+                }
+            }
+
+            if (GUILayout.Button("Port", GUILayout.Width(70f)))
+            {
+                navigation.NudgeHeadingLock(-5f);
+                headingInput = navigation.TargetHeading.ToString("F0", CultureInfo.InvariantCulture);
+                navigationMessage = $"Heading lock nudged to {navigation.TargetHeading:F0} deg.";
+            }
+
+            if (GUILayout.Button("Starboard", GUILayout.Width(82f)))
+            {
+                navigation.NudgeHeadingLock(5f);
+                headingInput = navigation.TargetHeading.ToString("F0", CultureInfo.InvariantCulture);
+                navigationMessage = $"Heading lock nudged to {navigation.TargetHeading:F0} deg.";
+            }
+
+            if (GUILayout.Button("Stop", GUILayout.Width(70f)))
+            {
+                navigation.StopNavigation();
+                navigationMessage = "Navigation stopped.";
+            }
+
+            GUILayout.FlexibleSpace();
+            GUILayout.EndHorizontal();
+            GUILayout.EndVertical();
+
+            GUILayout.Space(8f);
+            GUILayout.BeginVertical(GUI.skin.box);
+            GUILayout.Label("Coordinate Route JSON");
+            routeJsonInput = GUILayout.TextArea(routeJsonInput, GUILayout.Height(120f));
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button("Start Route", GUILayout.Width(100f)))
+            {
+                navigation.StartRouteFromJson(routeJsonInput, out navigationMessage);
+            }
+
+            if (GUILayout.Button("Clear", GUILayout.Width(70f)))
+            {
+                routeJsonInput = string.Empty;
+                navigationMessage = string.Empty;
+            }
+
+            GUILayout.Label(navigation.RouteActive
+                ? $"Waypoint {navigation.CurrentWaypointNumber}/{navigation.WaypointCount}"
+                : "Route idle");
+            GUILayout.EndHorizontal();
+            GUILayout.EndVertical();
+
+            GUILayout.Space(8f);
+            GUILayout.BeginHorizontal();
+            GUILayout.Label(navigationMessage);
+            GUILayout.FlexibleSpace();
+            DrawFooter();
+            GUILayout.EndHorizontal();
+        }
+
+        private static string GetNavigationModeLabel(SailMasterNavigationController navigation)
+        {
+            if (navigation.RouteActive) return "Route";
+            if (navigation.HeadingLockActive) return "Heading Lock";
+            if (navigation.ManualRudderActive) return "Manual Rudder";
+            return "Idle";
         }
 
         private void DrawSailRow(SailMasterControlSail sail, int rowIndex)
