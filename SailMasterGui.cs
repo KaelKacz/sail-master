@@ -25,7 +25,7 @@ namespace SailMaster
         private const float sliderVisualHeight = 16f;
         private static readonly Color windowBackgroundColor = new Color(0.25f, 0.25f, 0.25f, 0.95f);
         private static readonly Color sailRowColor = new Color(0.14f, 0.14f, 0.14f, 0.95f);
-        private static readonly Color groupedSailRowColor = new Color(0.34f, 0.34f, 0.34f, 0.95f);
+        private static readonly Color groupedSailRowColor = new Color(0.30f, 0.30f, 0.30f, 0.95f);
         private static readonly string[] tabLabels = { "Raise/Lower", "Trim", "Navigation" };
 
         private readonly HashSet<SailMasterControlSail>[] groups = new HashSet<SailMasterControlSail>[groupCount];
