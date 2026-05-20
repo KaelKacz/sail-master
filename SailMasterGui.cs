@@ -121,7 +121,10 @@ namespace SailMaster
             if (!visible) return;
 
             UnlockCursor();
-            Input.ResetInputAxes();
+            if (!AllowMouseLookThroughMenu())
+            {
+                Input.ResetInputAxes();
+            }
         }
 
         private void LateUpdate()
@@ -129,7 +132,10 @@ namespace SailMaster
             if (!visible) return;
 
             UnlockCursor();
-            Input.ResetInputAxes();
+            if (!AllowMouseLookThroughMenu())
+            {
+                Input.ResetInputAxes();
+            }
         }
 
         private void OnGUI()
@@ -144,7 +150,11 @@ namespace SailMaster
                 return;
             }
 
-            GUI.Button(new Rect(0f, 0f, Screen.width, Screen.height), string.Empty, GUIStyle.none);
+            if (!AllowMouseLookThroughMenu())
+            {
+                GUI.Button(new Rect(0f, 0f, Screen.width, Screen.height), string.Empty, GUIStyle.none);
+            }
+
             EnsureWindowStyle();
             EnsureSailRowStyles();
             var sails = SailMasterControlSail.GetControllableSails();
@@ -153,7 +163,10 @@ namespace SailMaster
             FitWindowHeightToContentIfNeeded(sails);
             FitWindowToScreen();
             windowRect = GUILayout.Window(GetInstanceID(), windowRect, DrawWindow, "SailMaster", windowStyle);
-            Input.ResetInputAxes();
+            if (!AllowMouseLookThroughMenu())
+            {
+                Input.ResetInputAxes();
+            }
         }
 
         private void EnsureWindowStyle()
@@ -222,6 +235,11 @@ namespace SailMaster
         {
             Cursor.lockState = CursorLockMode.None;
             Cursor.visible = true;
+        }
+
+        private static bool AllowMouseLookThroughMenu()
+        {
+            return Input.GetMouseButton(1);
         }
 
         private static bool IsShortcutKeyDownEvent(KeyboardShortcut shortcut)
