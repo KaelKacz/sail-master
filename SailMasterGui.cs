@@ -24,6 +24,8 @@ namespace SailMaster
         private const float measuredWindowBottomPadding = 18f;
         private const float sliderLayoutHeight = 24f;
         private const float sliderVisualHeight = 16f;
+        private const float manualRudderNudgeStep = 0.1f;
+        private const float headingNudgeStep = 5f;
         private static readonly Color windowBackgroundColor = new Color(0.25f, 0.25f, 0.25f, 0.95f);
         private static readonly Color sailRowColor = new Color(0.14f, 0.14f, 0.14f, 0.95f);
         private static readonly Color groupedSailRowColor = new Color(0.30f, 0.30f, 0.30f, 0.95f);
@@ -154,8 +156,6 @@ namespace SailMaster
 
             EnsureWindowStyle();
             EnsureSailRowStyles();
-            var sails = SailMasterControlSail.GetControllableSails();
-            PruneMissingSails(sails);
             FitWindowToScreen();
             ApplyMeasuredWindowHeight();
             FitWindowToScreen();
@@ -407,9 +407,9 @@ namespace SailMaster
 
             GUILayout.Space(8f);
             scroll = GUILayout.BeginScrollView(scroll, GUILayout.Height(GetSailListHeight(sails)));
-            for (int i = 0; i < sails.Count; i++)
+            foreach (var sail in sails)
             {
-                DrawSailRow(sails[i], i);
+                DrawSailRow(sail);
             }
             GUILayout.EndScrollView();
 
@@ -519,9 +519,9 @@ namespace SailMaster
 
             GUILayout.Space(8f);
             scroll = GUILayout.BeginScrollView(scroll, GUILayout.Height(GetSailListHeight(sails)));
-            for (int i = 0; i < sails.Count; i++)
+            foreach (var sail in sails)
             {
-                DrawTrimRow(sails[i], i);
+                DrawTrimRow(sail);
             }
             GUILayout.EndScrollView();
 
@@ -579,7 +579,7 @@ namespace SailMaster
             GUILayout.BeginHorizontal();
             if (GUILayout.Button("Port", GUILayout.Width(70f)))
             {
-                navigation.NudgeManualRudder(-0.1f);
+                navigation.NudgeManualRudder(-manualRudderNudgeStep);
             }
 
             float rudderInput = navigation.CurrentRudderInput;
@@ -596,7 +596,7 @@ namespace SailMaster
 
             if (GUILayout.Button("Starboard", GUILayout.Width(82f)))
             {
-                navigation.NudgeManualRudder(0.1f);
+                navigation.NudgeManualRudder(manualRudderNudgeStep);
             }
 
             GUILayout.Label($"{navigation.CurrentRudderInput:P0}", GUILayout.Width(50f));
@@ -630,14 +630,14 @@ namespace SailMaster
 
             if (GUILayout.Button("Port", GUILayout.Width(70f)))
             {
-                navigation.NudgeHeadingLock(-5f);
+                navigation.NudgeHeadingLock(-headingNudgeStep);
                 headingInput = navigation.TargetHeading.ToString("F0", CultureInfo.InvariantCulture);
                 navigationMessage = $"Heading mode nudged to {navigation.TargetHeading:F0} deg.";
             }
 
             if (GUILayout.Button("Starboard", GUILayout.Width(82f)))
             {
-                navigation.NudgeHeadingLock(5f);
+                navigation.NudgeHeadingLock(headingNudgeStep);
                 headingInput = navigation.TargetHeading.ToString("F0", CultureInfo.InvariantCulture);
                 navigationMessage = $"Heading mode nudged to {navigation.TargetHeading:F0} deg.";
             }
@@ -793,7 +793,7 @@ namespace SailMaster
             GUILayout.EndScrollView();
         }
 
-        private void DrawSailRow(SailMasterControlSail sail, int rowIndex)
+        private void DrawSailRow(SailMasterControlSail sail)
         {
             BeginSailRow(sail);
             GUILayout.BeginHorizontal();
@@ -824,7 +824,7 @@ namespace SailMaster
             EndSailRow();
         }
 
-        private void DrawTrimRow(SailMasterControlSail sail, int rowIndex)
+        private void DrawTrimRow(SailMasterControlSail sail)
         {
             BeginSailRow(sail);
             GUILayout.BeginVertical();
@@ -1142,7 +1142,6 @@ namespace SailMaster
             {
                 group.RemoveWhere(sail => sail == null || !visibleSails.Contains(sail));
             }
-
         }
     }
 }

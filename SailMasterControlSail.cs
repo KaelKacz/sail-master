@@ -358,13 +358,11 @@ namespace SailMaster
 
             public void Pull()
             {
-                ClearTarget();
                 ApplyTrim(true);
             }
 
             public void Release()
             {
-                ClearTarget();
                 ApplyTrim(false);
             }
 
@@ -414,10 +412,6 @@ namespace SailMaster
                 button.rope.changed = true;
             }
 
-            private void ClearTarget()
-            {
-                // TrimPoint does not own targets; this exists to make manual actions explicit.
-            }
         }
 
         public class TrimControl
