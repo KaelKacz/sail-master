@@ -32,7 +32,11 @@ namespace SailMaster
         private Rect windowRect = new Rect(40f, 80f, minWindowWidth, desiredWindowHeight);
         private Vector2 scroll;
         private GUIStyle windowStyle;
+        private GUIStyle sailRowStyle;
+        private GUIStyle groupedSailRowStyle;
         private Texture2D windowBackgroundTexture;
+        private Texture2D sailRowTexture;
+        private Texture2D groupedSailRowTexture;
         private int selectedGroup;
         private int selectedTab;
         private int lastHeightSailCount = -1;
@@ -97,6 +101,18 @@ namespace SailMaster
                 Destroy(windowBackgroundTexture);
                 windowBackgroundTexture = null;
             }
+
+            if (sailRowTexture != null)
+            {
+                Destroy(sailRowTexture);
+                sailRowTexture = null;
+            }
+
+            if (groupedSailRowTexture != null)
+            {
+                Destroy(groupedSailRowTexture);
+                groupedSailRowTexture = null;
+            }
         }
 
         private void Update()
@@ -130,6 +146,7 @@ namespace SailMaster
 
             GUI.Button(new Rect(0f, 0f, Screen.width, Screen.height), string.Empty, GUIStyle.none);
             EnsureWindowStyle();
+            EnsureSailRowStyles();
             var sails = SailMasterControlSail.GetControllableSails();
             PruneMissingSails(sails);
             FitWindowToScreen();
@@ -153,6 +170,33 @@ namespace SailMaster
             windowStyle.onNormal.background = windowBackgroundTexture;
             windowStyle.normal.textColor = Color.white;
             windowStyle.onNormal.textColor = Color.white;
+        }
+
+        private void EnsureSailRowStyles()
+        {
+            if (sailRowStyle != null && groupedSailRowStyle != null) return;
+
+            sailRowTexture = MakeTexture(sailRowColor);
+            groupedSailRowTexture = MakeTexture(groupedSailRowColor);
+
+            sailRowStyle = CreateSailRowStyle(sailRowTexture);
+            groupedSailRowStyle = CreateSailRowStyle(groupedSailRowTexture);
+        }
+
+        private static GUIStyle CreateSailRowStyle(Texture2D background)
+        {
+            var style = new GUIStyle(GUI.skin.box)
+            {
+                normal =
+                {
+                    background = background,
+                    textColor = Color.white
+                },
+                border = new RectOffset(1, 1, 1, 1)
+            };
+            style.onNormal.background = background;
+            style.onNormal.textColor = Color.white;
+            return style;
         }
 
         private static Texture2D MakeTexture(Color color)
@@ -534,6 +578,7 @@ namespace SailMaster
                 navigation.ToggleHelmLock();
             }
             GUILayout.EndHorizontal();
+            GUILayout.Label(navigation.HelmControlStatus);
             GUILayout.EndVertical();
 
             GUILayout.Space(8f);
@@ -780,10 +825,8 @@ namespace SailMaster
 
         private void BeginSailRow(SailMasterControlSail sail)
         {
-            Color previousBackgroundColor = GUI.backgroundColor;
-            GUI.backgroundColor = groups[selectedGroup].Contains(sail) ? groupedSailRowColor : sailRowColor;
-            GUILayout.BeginVertical(GUI.skin.box);
-            GUI.backgroundColor = previousBackgroundColor;
+            GUIStyle style = groups[selectedGroup].Contains(sail) ? groupedSailRowStyle : sailRowStyle;
+            GUILayout.BeginVertical(style);
         }
 
         private void EndSailRow()

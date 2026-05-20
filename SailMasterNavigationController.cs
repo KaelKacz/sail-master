@@ -31,23 +31,27 @@ namespace SailMaster
         private HingeJoint rudderJoint;
         private Rudder rudder;
         private GPButtonSteeringWheel steeringWheel;
+        private readonly List<GPButtonSteeringWheel> relatedSteeringWheels = new List<GPButtonSteeringWheel>();
         private float currentInputMax;
         private float targetHeading;
         private float targetRudderInput;
         private float targetRudderAngle;
         private float lastWrittenInput;
+        private float manualRudderWheelTargetReachedTime;
         private float nextSteeringWheelResolveTime;
         private float nextDebugLogTime;
         private bool headingLockActive;
         private bool routeActive;
         private bool manualRudderActive;
         private bool steeringWheelLockedBySailMaster;
+        private bool playerHelmLocked;
         private readonly List<Vector2> waypoints = new List<Vector2>();
         private int waypointIndex;
         private float integral;
         private float lastError;
         private float lastTime;
         private string status = "Navigation controller ready.";
+        private string helmControlStatus = "Helm released.";
         private static bool debugLogSessionStarted;
         private static readonly string debugLogPath = Path.Combine(Paths.BepInExRootPath, "SailMasterNavigationDebug.log");
 
@@ -56,7 +60,11 @@ namespace SailMaster
         public bool HeadingLockActive => headingLockActive;
         public bool RouteActive => routeActive;
         public bool ManualRudderActive => manualRudderActive;
-        public bool HelmLocked => IsSteeringWheelLocked();
+        public bool HelmLocked => IsAnyRelatedSteeringWheelLocked() && !HelmHeldBySailMaster;
+        public bool HelmHeldBySailMaster => steeringWheelLockedBySailMaster
+            && IsSteeringWheelLocked()
+            && (headingLockActive || routeActive || manualRudderActive);
+        public string HelmControlStatus => GetHelmControlStatus();
         public float ManualRudderInput => CurrentRudderInput;
         public float CurrentRudderInput => MaxRudderAngle > 0f ? Mathf.Clamp(-RudderAngle / MaxRudderAngle, -1f, 1f) : 0f;
         public float TargetRudderInput => targetRudderInput;
@@ -99,6 +107,8 @@ namespace SailMaster
             if (!ResolveSteeringWheel()) return;
 
             UpdateCanControl();
+            RefreshPlayerHelmLockState();
+            RefreshHelmControlStatus();
             if (!CanControl)
             {
                 ReleaseSteeringWheel();
@@ -129,6 +139,8 @@ namespace SailMaster
             {
                 WriteDebugLogThrottled();
             }
+
+            RefreshHelmControlStatus();
         }
 
         private bool ResolveSteeringWheel()
@@ -147,6 +159,7 @@ namespace SailMaster
             if (boat != null && shipRigidbody == null)
             {
                 shipRigidbody = boat.GetComponent<Rigidbody>();
+                RefreshRelatedSteeringWheels();
             }
 
             if (steeringWheel != null && rudderJoint != null && currentInputMax > 0f)
@@ -168,6 +181,7 @@ namespace SailMaster
                 steeringWheel = button;
                 rudderJoint = button.attachedRudder != null ? button.attachedRudder : rudder.GetComponent<HingeJoint>();
                 RefreshCurrentInputMax();
+                RefreshRelatedSteeringWheels();
                 WriteDebugLog("resolved steering wheel");
                 break;
             }
@@ -188,14 +202,18 @@ namespace SailMaster
 
         public static SailMasterNavigationController GetCurrent()
         {
-            return controllers.FirstOrDefault(controller => controller != null && controller.IsReady && controller.CanControl)
+            return controllers.FirstOrDefault(controller => controller != null && controller.IsReady && controller.CanControl && controller.IsSailMasterSteeringActive())
+                ?? controllers.FirstOrDefault(controller => controller != null && controller.IsReady && controller.CanControl && controller.HelmLocked)
+                ?? controllers.FirstOrDefault(controller => controller != null && controller.IsReady && controller.CanControl)
                 ?? controllers.FirstOrDefault(controller => controller != null && controller.IsReady);
         }
 
         public void SetManualRudder(float input)
         {
+            SyncWheelInputToCurrentRudder();
             targetRudderInput = Mathf.Clamp(input, -1f, 1f);
             targetRudderAngle = -targetRudderInput * MaxRudderAngle;
+            manualRudderWheelTargetReachedTime = 0f;
             manualRudderActive = true;
             headingLockActive = false;
             routeActive = false;
@@ -205,11 +223,7 @@ namespace SailMaster
 
         public void CenterRudder()
         {
-            if (steeringWheel != null)
-            {
-                steeringWheel.currentInput = RudderAngle * steeringWheel.gearRatio;
-            }
-
+            SyncWheelInputToCurrentRudder();
             SetManualRudder(0f);
             status = "Manual rudder target centered.";
         }
@@ -230,10 +244,18 @@ namespace SailMaster
         {
             if (steeringWheel == null) return;
 
-            bool locked = IsSteeringWheelLocked();
-            Traverse.Create(steeringWheel).Method(locked ? "Unlock" : "Lock").GetValue();
+            RefreshPlayerHelmLockState();
+            bool nextLocked = !HelmLocked;
+            if (HelmHeldBySailMaster)
+            {
+                status = "SailMaster has helm control.";
+                return;
+            }
+
+            SetRelatedSteeringWheelLocks(nextLocked, true, "toggle");
+            playerHelmLocked = nextLocked;
             steeringWheelLockedBySailMaster = false;
-            status = !locked ? "Helm locked in place." : "Helm unlocked.";
+            status = nextLocked ? "Helm locked in place." : "Helm unlocked.";
         }
 
         public void StopNavigation()
@@ -478,13 +500,32 @@ namespace SailMaster
             float nextWheelInput = Mathf.MoveTowards(steeringWheel.currentInput, targetWheelInput, manualWheelInputSpeed * Time.deltaTime);
             WriteSteeringInput(nextWheelInput);
 
-            if (Mathf.Abs(steeringWheel.currentInput - targetWheelInput) <= 0.5f && Mathf.Abs(targetRudderAngle - RudderAngle) <= 1f)
+            bool wheelAtTarget = Mathf.Abs(steeringWheel.currentInput - targetWheelInput) <= 0.5f;
+            bool rudderAtTarget = Mathf.Abs(targetRudderAngle - RudderAngle) <= 1f;
+            if (wheelAtTarget && manualRudderWheelTargetReachedTime <= 0f)
+            {
+                manualRudderWheelTargetReachedTime = Time.time;
+            }
+            else if (!wheelAtTarget)
+            {
+                manualRudderWheelTargetReachedTime = 0f;
+            }
+
+            if (wheelAtTarget && (rudderAtTarget || Time.time - manualRudderWheelTargetReachedTime >= 0.75f))
             {
                 manualRudderActive = false;
                 ReleaseSteeringWheel();
-                status = "Manual rudder target reached.";
-                WriteDebugLog("manual rudder target reached");
+                status = rudderAtTarget ? "Manual rudder target reached." : "Manual rudder wheel target reached.";
+                WriteDebugLog(rudderAtTarget ? "manual rudder target reached" : "manual rudder wheel target reached");
             }
+        }
+
+        private void SyncWheelInputToCurrentRudder()
+        {
+            if (steeringWheel == null) return;
+
+            steeringWheel.currentInput = RudderAngle * steeringWheel.gearRatio;
+            Traverse.Create(steeringWheel).Method("ApplyWheelRotationFromRudder").GetValue();
         }
 
         private void WriteSteeringInput(float input)
@@ -549,11 +590,18 @@ namespace SailMaster
 
         private void LockSteeringWheel()
         {
+            if (IsAnyRelatedSteeringWheelLocked() && !HelmHeldBySailMaster)
+            {
+                SetRelatedSteeringWheelLocks(false, true, "SailMaster takeover");
+            }
+
             if (!IsSteeringWheelLocked())
             {
                 Traverse.Create(steeringWheel).Field("locked").SetValue(true);
-                steeringWheelLockedBySailMaster = true;
             }
+
+            steeringWheelLockedBySailMaster = true;
+            RefreshHelmControlStatus();
         }
 
         private void ReleaseSteeringWheel()
@@ -566,11 +614,87 @@ namespace SailMaster
             }
 
             steeringWheelLockedBySailMaster = false;
+            RefreshHelmControlStatus();
         }
 
         private bool IsSteeringWheelLocked()
         {
             return steeringWheel != null && (bool)Traverse.Create(steeringWheel).Field("locked").GetValue();
+        }
+
+        private bool IsAnyRelatedSteeringWheelLocked()
+        {
+            return relatedSteeringWheels.Any(IsSteeringWheelLocked)
+                || (relatedSteeringWheels.Count == 0 && IsSteeringWheelLocked());
+        }
+
+        private bool IsSteeringWheelLocked(GPButtonSteeringWheel wheel)
+        {
+            return wheel != null && (bool)Traverse.Create(wheel).Field("locked").GetValue();
+        }
+
+        private void SetRelatedSteeringWheelLocks(bool locked, bool callGameMethod, string reason)
+        {
+            List<GPButtonSteeringWheel> wheels = relatedSteeringWheels.Count > 0
+                ? relatedSteeringWheels.Where(wheel => wheel != null).ToList()
+                : new List<GPButtonSteeringWheel> { steeringWheel };
+            GPButtonSteeringWheel soundWheel = wheels.Contains(steeringWheel) ? steeringWheel : wheels.FirstOrDefault();
+            if (callGameMethod && soundWheel != null && IsSteeringWheelLocked(soundWheel) != locked)
+            {
+                Traverse.Create(soundWheel).Method(locked ? "Lock" : "Unlock").GetValue();
+            }
+
+            foreach (GPButtonSteeringWheel wheel in wheels)
+            {
+                if (wheel == null) continue;
+                Traverse.Create(wheel).Field("locked").SetValue(locked);
+            }
+        }
+
+        private void RefreshRelatedSteeringWheels()
+        {
+            relatedSteeringWheels.Clear();
+            if (boat == null) return;
+
+            foreach (GPButtonSteeringWheel wheel in FindObjectsOfType<GPButtonSteeringWheel>())
+            {
+                Transform wheelBoat = wheel.GetComponentInParent<PurchasableBoat>()?.transform;
+                if (wheelBoat != boat) continue;
+
+                relatedSteeringWheels.Add(wheel);
+            }
+
+            if (relatedSteeringWheels.Count == 0 && steeringWheel != null)
+            {
+                relatedSteeringWheels.Add(steeringWheel);
+            }
+        }
+
+        private bool IsSailMasterSteeringActive()
+        {
+            return headingLockActive || routeActive || manualRudderActive;
+        }
+
+        private void RefreshPlayerHelmLockState()
+        {
+            if (steeringWheel == null || HelmHeldBySailMaster)
+            {
+                return;
+            }
+
+            bool previous = playerHelmLocked;
+            playerHelmLocked = IsAnyRelatedSteeringWheelLocked();
+        }
+
+        private void RefreshHelmControlStatus()
+        {
+            helmControlStatus = GetHelmControlStatus();
+        }
+
+        private string GetHelmControlStatus()
+        {
+            if (HelmHeldBySailMaster) return "SailMaster has helm control.";
+            return "SailMaster is not controlling the helm.";
         }
 
         private float BoatHeading()

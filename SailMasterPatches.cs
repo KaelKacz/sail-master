@@ -25,4 +25,5 @@ namespace SailMaster
             __instance.gameObject.AddComponent<SailMasterNavigationController>();
         }
     }
+
 }
