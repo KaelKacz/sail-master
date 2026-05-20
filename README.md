@@ -60,7 +60,7 @@ SailMaster drives the game steering wheel internally, not the rudder directly. I
 
 ## Route JSON
 
-Route input expects a Sailwind Interactive Map / CoordinateViewer-style JSON export.
+Route input expects a Sailwind Interactive Map JSON export.
 
 Only `path` entries with `colour` set to `orangepoint` are used. For each point:
 
