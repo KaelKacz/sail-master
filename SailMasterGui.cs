@@ -16,11 +16,12 @@ namespace SailMaster
         private const float minSailListHeight = 120f;
         private const float windowChromeHeight = 200f;
         private const float sailListHeightBuffer = 28f;
+        private const float trimListHeightBuffer = 38f;
         private const float raiseLowerRowHeight = 32f;
         private const float trimHeaderHeight = 26f;
         private const float trimControlHeight = 24f;
-        private const float navigationContentHeight = 620f;
-        private const float rowBoxPaddingHeight = 10f;
+        private const float rowBoxPaddingHeight = 6f;
+        private const float measuredWindowBottomPadding = 18f;
         private const float sliderLayoutHeight = 24f;
         private const float sliderVisualHeight = 16f;
         private static readonly Color windowBackgroundColor = new Color(0.25f, 0.25f, 0.25f, 0.95f);
@@ -39,11 +40,7 @@ namespace SailMaster
         private Texture2D groupedSailRowTexture;
         private int selectedGroup;
         private int selectedTab;
-        private int lastHeightSailCount = -1;
-        private int lastHeightTrimRows = -1;
-        private int lastHeightSelectedTab = -1;
-        private int lastHeightScreenWidth = -1;
-        private int lastHeightScreenHeight = -1;
+        private float measuredWindowContentHeight = desiredWindowHeight;
         private bool visible;
         private bool hadCursorState;
         private CursorLockMode previousCursorLockState;
@@ -160,7 +157,7 @@ namespace SailMaster
             var sails = SailMasterControlSail.GetControllableSails();
             PruneMissingSails(sails);
             FitWindowToScreen();
-            FitWindowHeightToContentIfNeeded(sails);
+            ApplyMeasuredWindowHeight();
             FitWindowToScreen();
             windowRect = GUILayout.Window(GetInstanceID(), windowRect, DrawWindow, "SailMaster", windowStyle);
             if (!AllowMouseLookThroughMenu())
@@ -368,6 +365,7 @@ namespace SailMaster
                 DrawNavigationTab();
             }
 
+            MeasureWindowContentHeight();
             GUI.DragWindow();
         }
 
@@ -444,39 +442,46 @@ namespace SailMaster
             GUILayout.EndHorizontal();
         }
 
-        private void FitWindowHeightToContentIfNeeded(List<SailMasterControlSail> sails)
+        private void ApplyMeasuredWindowHeight()
         {
-            int trimRows = GetTrimRowCount(sails);
-            if (lastHeightSailCount == sails.Count &&
-                lastHeightTrimRows == trimRows &&
-                lastHeightSelectedTab == selectedTab &&
-                lastHeightScreenWidth == Screen.width &&
-                lastHeightScreenHeight == Screen.height)
+            float maxHeight = Mathf.Max(minWindowHeight, Screen.height - (screenMargin * 2f));
+            float targetHeight = Mathf.Clamp(measuredWindowContentHeight, minWindowHeight, maxHeight);
+            if (Mathf.Abs(windowRect.height - targetHeight) <= 1f)
             {
                 return;
             }
 
-            lastHeightSailCount = sails.Count;
-            lastHeightTrimRows = trimRows;
-            lastHeightSelectedTab = selectedTab;
-            lastHeightScreenWidth = Screen.width;
-            lastHeightScreenHeight = Screen.height;
-
-            FitWindowHeightToContent(sails);
+            windowRect.height = targetHeight;
+            windowRect.y = Mathf.Clamp(windowRect.y, screenMargin, Mathf.Max(screenMargin, Screen.height - windowRect.height - screenMargin));
         }
 
-        private void FitWindowHeightToContent(List<SailMasterControlSail> sails)
+        private void MeasureWindowContentHeight()
         {
-            float maxHeight = Mathf.Max(minWindowHeight, Screen.height - (screenMargin * 2f));
-            float contentHeight = windowChromeHeight + GetSailListContentHeight(sails) + sailListHeightBuffer;
-            windowRect.height = Mathf.Clamp(contentHeight, minWindowHeight, maxHeight);
-            windowRect.y = Mathf.Clamp(windowRect.y, screenMargin, Mathf.Max(screenMargin, Screen.height - windowRect.height - screenMargin));
+            if (Event.current == null || Event.current.type != EventType.Repaint)
+            {
+                return;
+            }
+
+            Rect lastRect = GUILayoutUtility.GetLastRect();
+            if (lastRect.height <= 0f)
+            {
+                return;
+            }
+
+            float measuredHeight = lastRect.yMax + measuredWindowBottomPadding;
+            if (Mathf.Abs(measuredWindowContentHeight - measuredHeight) <= 1f)
+            {
+                return;
+            }
+
+            measuredWindowContentHeight = measuredHeight;
         }
 
         private float GetSailListHeight(List<SailMasterControlSail> sails)
         {
             float maxListHeight = Mathf.Max(minSailListHeight, windowRect.height - windowChromeHeight);
-            return Mathf.Min(GetSailListContentHeight(sails) + sailListHeightBuffer, maxListHeight);
+            float buffer = selectedTab == 1 ? trimListHeightBuffer : sailListHeightBuffer;
+            return Mathf.Min(GetSailListContentHeight(sails) + buffer, maxListHeight);
         }
 
         private float GetSailListContentHeight(List<SailMasterControlSail> sails)
@@ -488,7 +493,7 @@ namespace SailMaster
 
             if (selectedTab == 2)
             {
-                return navigationContentHeight;
+                return minSailListHeight;
             }
 
             float height = GetTrimRowCount(sails) * trimControlHeight;
@@ -538,6 +543,14 @@ namespace SailMaster
                 ApplyTrim(groups[selectedGroup], false);
             }
 
+            float amount = GetAverageTrimAmount(groups[selectedGroup]);
+            float newAmount = DrawClickableSlider(amount, 0f, 1f, GUILayout.Width(150f));
+            if (!Mathf.Approximately(amount, newAmount))
+            {
+                SetTrimAmount(groups[selectedGroup], newAmount);
+            }
+
+            GUILayout.Label($"{amount:P0}", GUILayout.Width(42f));
             GUILayout.FlexibleSpace();
             GUILayout.EndHorizontal();
         }
@@ -1041,6 +1054,17 @@ namespace SailMaster
             return Mathf.Clamp01(validSails.Average(sail => sail.DeployedAmount));
         }
 
+        private static float GetAverageTrimAmount(IEnumerable<SailMasterControlSail> sails)
+        {
+            var trimControls = sails
+                .Where(sail => sail != null)
+                .SelectMany(sail => sail.TrimControls)
+                .ToList();
+            if (trimControls.Count == 0) return 0f;
+
+            return Mathf.Clamp01(trimControls.Average(trimControl => trimControl.Amount));
+        }
+
         private void SetGroupAmount(float amount)
         {
             foreach (var sail in groups[selectedGroup].ToList())
@@ -1089,6 +1113,24 @@ namespace SailMaster
                     {
                         trimControl.Release();
                     }
+                }
+            }
+        }
+
+        private void SetTrimAmount(IEnumerable<SailMasterControlSail> sails, float amount)
+        {
+            amount = Mathf.Clamp01(amount);
+            foreach (var sail in sails.ToList())
+            {
+                if (sail == null)
+                {
+                    groups[selectedGroup].Remove(sail);
+                    continue;
+                }
+
+                foreach (var trimControl in sail.TrimControls)
+                {
+                    trimControl.SetAmount(amount);
                 }
             }
         }
