@@ -15,6 +15,7 @@
     <RootNamespace>SailMaster</RootNamespace>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
     <SailwindPluginsDir>C:\Program Files (x86)\Steam\steamapps\common\Sailwind\BepInEx\plugins</SailwindPluginsDir>
+    <SailMasterPluginDir>$(SailwindPluginsDir)\SailMaster</SailMasterPluginDir>
   </PropertyGroup>
 
   <ItemGroup>
@@ -25,6 +26,10 @@
     <Reference Include="Assembly-CSharp">
       <HintPath>..\Assembly-CSharp.dll</HintPath>
       <Private>False</Private>
+    </Reference>
+    <Reference Include="Newtonsoft.Json">
+      <HintPath>..\Newtonsoft.Json.dll</HintPath>
+      <Private>True</Private>
     </Reference>
   </ItemGroup>
 
@@ -37,8 +42,9 @@
   </ItemGroup>
 
   <Target Name="CopyToSailwindPlugins" AfterTargets="Build">
-    <MakeDir Directories="$(SailwindPluginsDir)" />
-    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(SailwindPluginsDir)" OverwriteReadOnlyFiles="true" />
+    <MakeDir Directories="$(SailMasterPluginDir)" />
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(SailMasterPluginDir)" OverwriteReadOnlyFiles="true" />
+    <Copy SourceFiles="..\Newtonsoft.Json.dll" DestinationFolder="$(SailMasterPluginDir)" OverwriteReadOnlyFiles="true" />
   </Target>
 
 </Project>

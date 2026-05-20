@@ -1,29 +1,33 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using BepInEx;
 using HarmonyLib;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using UnityEngine;
 
 namespace SailMaster
 {
     public class SailMasterNavigationController : MonoBehaviour
     {
-        private const float waypointArrivalDistance = 0.02f;
+        private const float waypointArrivalDistanceNm = 0.25f;
+        private const float metersPerSecondToKnots = 1.94384f;
+        private const float nauticalMilesPerDegreeLatitude = 60f;
         private const float headingUpdateInterval = 0.05f;
         private const float debugLogInterval = 1f;
         private const float steeringWheelResolveInterval = 2f;
         private const float manualWheelInputSpeed = 90f;
         private const float manualRudderNudgeStep = 0.1f;
         private const float headingNudgeStep = 5f;
-        private const float defaultKp = 0.03f;
-        private const float defaultKi = 0.005f;
-        private const float defaultKd = 0.015f;
+        private const string routePointColor = "orangepoint";
 
         private static readonly List<SailMasterNavigationController> controllers = new List<SailMasterNavigationController>();
 
         private Transform boat;
+        private Rigidbody shipRigidbody;
         private HingeJoint rudderJoint;
         private Rudder rudder;
         private GPButtonSteeringWheel steeringWheel;
@@ -37,6 +41,7 @@ namespace SailMaster
         private bool headingLockActive;
         private bool routeActive;
         private bool manualRudderActive;
+        private bool steeringWheelLockedBySailMaster;
         private readonly List<Vector2> waypoints = new List<Vector2>();
         private int waypointIndex;
         private float integral;
@@ -51,15 +56,25 @@ namespace SailMaster
         public bool HeadingLockActive => headingLockActive;
         public bool RouteActive => routeActive;
         public bool ManualRudderActive => manualRudderActive;
+        public bool HelmLocked => IsSteeringWheelLocked();
         public float ManualRudderInput => CurrentRudderInput;
         public float CurrentRudderInput => MaxRudderAngle > 0f ? Mathf.Clamp(-RudderAngle / MaxRudderAngle, -1f, 1f) : 0f;
         public float TargetRudderInput => targetRudderInput;
         public int WaypointCount => waypoints.Count;
         public int CurrentWaypointNumber => routeActive ? waypointIndex + 1 : 0;
+        public bool HasCurrentWaypoint => waypointIndex >= 0 && waypointIndex < waypoints.Count;
         public string Status => status;
         public float CurrentHeading => IsReady ? NormalizeHeading360(BoatHeading()) : 0f;
         public float TargetHeading => NormalizeHeading360(targetHeading);
         public float RudderAngle => rudder != null ? rudder.currentAngle : 0f;
+        public Vector2 Coordinates => IsReady ? CurrentCoordinates() : Vector2.zero;
+        public Vector2 CurrentWaypoint => HasCurrentWaypoint ? waypoints[waypointIndex] : Vector2.zero;
+        public float CurrentWaypointDistanceNm => HasCurrentWaypoint ? CalculateGlobeDistanceNm(Coordinates, CurrentWaypoint) : 0f;
+        public float BoatSpeedKnots => shipRigidbody != null ? shipRigidbody.velocity.magnitude * metersPerSecondToKnots : 0f;
+        public float TrueWindSpeed => Wind.currentWind.magnitude;
+        public float TrueWindDirection => NormalizeHeading360(Vector3.SignedAngle(Wind.currentWind, Vector3.forward, -Vector3.up));
+        public float ApparentWindSpeed => ApparentWind().magnitude;
+        public float ApparentWindAngle => GetApparentWindAngle();
         public string DebugStatus => $"Ready {IsReady}  Can {CanControl}  Input {(steeringWheel != null ? steeringWheel.currentInput : 0f):F1}  Max {currentInputMax:F1}";
         public string DebugLogPath => debugLogPath;
         private float MaxRudderAngle => rudderJoint != null ? Mathf.Max(1f, Mathf.Abs(rudderJoint.limits.max)) : 0f;
@@ -127,6 +142,11 @@ namespace SailMaster
             if (boat == null)
             {
                 boat = GetComponentInParent<PurchasableBoat>()?.transform;
+            }
+
+            if (boat != null && shipRigidbody == null)
+            {
+                shipRigidbody = boat.GetComponent<Rigidbody>();
             }
 
             if (steeringWheel != null && rudderJoint != null && currentInputMax > 0f)
@@ -206,6 +226,16 @@ namespace SailMaster
             EnableHeadingLock(heading + delta);
         }
 
+        public void ToggleHelmLock()
+        {
+            if (steeringWheel == null) return;
+
+            bool locked = IsSteeringWheelLocked();
+            Traverse.Create(steeringWheel).Method(locked ? "Unlock" : "Lock").GetValue();
+            steeringWheelLockedBySailMaster = false;
+            status = !locked ? "Helm locked in place." : "Helm unlocked.";
+        }
+
         public void StopNavigation()
         {
             headingLockActive = false;
@@ -239,50 +269,137 @@ namespace SailMaster
 
         public bool StartRouteFromJson(string json, out string message)
         {
-            if (string.IsNullOrWhiteSpace(json))
+            return StartRouteFromJson(json, 0, out message);
+        }
+
+        public bool StartRouteFromJson(string json, int startWaypointIndex, out string message)
+        {
+            if (!TryParseRouteJson(json, out List<Vector2> parsedWaypoints, out message))
             {
-                message = "Paste a coordinate JSON list first.";
                 status = message;
                 return false;
             }
 
+            if (startWaypointIndex < 0 || startWaypointIndex >= parsedWaypoints.Count)
+            {
+                message = $"Select a waypoint from 1 to {parsedWaypoints.Count}.";
+                status = message;
+                return false;
+            }
+
+            waypoints.Clear();
+            waypoints.AddRange(parsedWaypoints);
+            waypointIndex = startWaypointIndex;
+            routeActive = true;
+            headingLockActive = false;
+            manualRudderActive = false;
+            ResetPid();
+            UpdateRouteTarget();
+            message = $"Route started at waypoint {waypointIndex + 1}/{waypoints.Count}.";
+            status = message;
+            WriteDebugLog(message);
+            return true;
+        }
+
+        public static bool ValidateRouteJson(string json, out string message)
+        {
+            return TryParseRouteJson(json, out _, out message);
+        }
+
+        public static bool TryGetRouteWaypoints(string json, out List<Vector2> routeWaypoints, out string message)
+        {
+            return TryParseRouteJson(json, out routeWaypoints, out message);
+        }
+
+        private static bool TryParseRouteJson(string json, out List<Vector2> parsedWaypoints, out string message)
+        {
+            parsedWaypoints = new List<Vector2>();
+
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                message = "Paste a Sailwind Interactive Map JSON export first.";
+                return false;
+            }
+
+            JObject root;
             try
             {
-                var parsed = JsonUtility.FromJson<CoordinateListJson>(json);
-                var parsedWaypoints = parsed?.path?
-                    .Where(point => point?.pos != null
-                        && point.pos.Length >= 2
-                        && string.Equals(point.colour, "orangepoint", StringComparison.OrdinalIgnoreCase))
-                    .Select(point => new Vector2(point.pos[0], point.pos[1]))
-                    .ToList();
-
-                if (parsedWaypoints == null || parsedWaypoints.Count == 0)
-                {
-                    message = "No orangepoint path positions found in JSON.";
-                    status = message;
-                    return false;
-                }
-
-                waypoints.Clear();
-                waypoints.AddRange(parsedWaypoints);
-                waypointIndex = 0;
-                routeActive = true;
-                headingLockActive = false;
-                manualRudderActive = false;
-                ResetPid();
-                UpdateRouteTarget();
-                message = $"Route started with {waypoints.Count} waypoint(s).";
-                status = message;
-                WriteDebugLog(message);
-                return true;
+                root = JObject.Parse(json);
             }
-            catch (Exception ex)
+            catch (JsonException ex)
             {
-                message = $"Could not parse coordinate JSON: {ex.Message}";
-                status = message;
+                message = $"Could not parse route JSON: {ex.Message}";
                 SailMasterMain.Logger?.LogWarning(message);
                 return false;
             }
+
+            if (!(root["path"] is JArray path))
+            {
+                message = "JSON must contain a path array from Sailwind Interactive Map.";
+                return false;
+            }
+
+            if (path.Count == 0)
+            {
+                message = "Route path is empty.";
+                return false;
+            }
+
+            int ignoredLineCount = GetArrayCount(root, "lines");
+            int ignoredPointCount = GetArrayCount(root, "points");
+            int ignoredGoalCount = GetArrayCount(root, "goals");
+            int skippedColor = 0;
+            int skippedInvalidPosition = 0;
+            foreach (JToken point in path)
+            {
+                if (point.Type != JTokenType.Object)
+                {
+                    skippedInvalidPosition++;
+                    continue;
+                }
+
+                string color = point.Value<string>("colour");
+                if (!string.Equals(color, routePointColor, StringComparison.OrdinalIgnoreCase))
+                {
+                    skippedColor++;
+                    continue;
+                }
+
+                if (!(point["pos"] is JArray position)
+                    || position.Count < 2
+                    || !TryGetFloat(position[0], out float longitude)
+                    || !TryGetFloat(position[1], out float latitude)
+                    || !IsFinite(longitude)
+                    || !IsFinite(latitude))
+                {
+                    skippedInvalidPosition++;
+                    continue;
+                }
+
+                parsedWaypoints.Add(new Vector2(longitude, latitude));
+            }
+
+            if (parsedWaypoints.Count == 0)
+            {
+                message = skippedColor > 0
+                    ? "No usable orangepoint path positions found."
+                    : "Path entries need colour \"orangepoint\" and pos [longitude, latitude].";
+                return false;
+            }
+
+            message = $"Valid route: {parsedWaypoints.Count} waypoint(s)";
+            if (skippedColor > 0 || skippedInvalidPosition > 0)
+            {
+                message += $" ({skippedColor} non-route, {skippedInvalidPosition} invalid skipped)";
+            }
+
+            if (ignoredLineCount > 0 || ignoredPointCount > 0 || ignoredGoalCount > 0)
+            {
+                message += $" Ignored map annotations: {ignoredLineCount} line(s), {ignoredPointCount} point(s), {ignoredGoalCount} goal(s)";
+            }
+
+            message += ".";
+            return true;
         }
 
         private void UpdateCanControl()
@@ -311,7 +428,7 @@ namespace SailMaster
             }
 
             Vector2 current = CurrentCoordinates();
-            while (waypointIndex < waypoints.Count && Vector2.Distance(current, waypoints[waypointIndex]) <= waypointArrivalDistance)
+            while (waypointIndex < waypoints.Count && CalculateGlobeDistanceNm(current, waypoints[waypointIndex]) <= waypointArrivalDistanceNm)
             {
                 waypointIndex++;
             }
@@ -326,7 +443,7 @@ namespace SailMaster
             Vector2 target = waypoints[waypointIndex];
             Vector2 delta = target - current;
             targetHeading = NormalizeHeading180(Mathf.Atan2(delta.x, delta.y) * Mathf.Rad2Deg);
-            status = $"Waypoint {waypointIndex + 1}/{waypoints.Count}: {target.x:F4}, {target.y:F4}.";
+            status = $"Waypoint {waypointIndex + 1}/{waypoints.Count}: {target.x:F4}, {target.y:F4} ({CalculateGlobeDistanceNm(current, target):F2} nm).";
         }
 
         private Vector2 CurrentCoordinates()
@@ -343,7 +460,9 @@ namespace SailMaster
             float error = Mathf.DeltaAngle(desiredHeading, currentHeading);
             integral = Mathf.Clamp(integral + (error * deltaTime), -50f, 50f);
             float derivative = (error - lastError) / deltaTime;
-            float command = (defaultKp * error) + (defaultKi * integral) + (defaultKd * derivative);
+            float command = (SailMasterMain.navigationKp.Value * error)
+                + (SailMasterMain.navigationKi.Value * integral)
+                + (SailMasterMain.navigationKd.Value * derivative);
 
             WriteSteeringInput(currentInputMax * Mathf.Clamp(command, -1f, 1f));
             lastError = error;
@@ -430,9 +549,10 @@ namespace SailMaster
 
         private void LockSteeringWheel()
         {
-            if (!(bool)Traverse.Create(steeringWheel).Field("locked").GetValue())
+            if (!IsSteeringWheelLocked())
             {
                 Traverse.Create(steeringWheel).Field("locked").SetValue(true);
+                steeringWheelLockedBySailMaster = true;
             }
         }
 
@@ -440,15 +560,36 @@ namespace SailMaster
         {
             if (steeringWheel == null) return;
 
-            if ((bool)Traverse.Create(steeringWheel).Field("locked").GetValue())
+            if (steeringWheelLockedBySailMaster && IsSteeringWheelLocked())
             {
                 Traverse.Create(steeringWheel).Field("locked").SetValue(false);
             }
+
+            steeringWheelLockedBySailMaster = false;
+        }
+
+        private bool IsSteeringWheelLocked()
+        {
+            return steeringWheel != null && (bool)Traverse.Create(steeringWheel).Field("locked").GetValue();
         }
 
         private float BoatHeading()
         {
             return NormalizeHeading180(Vector3.SignedAngle(boat.forward, Vector3.forward, -Vector3.up));
+        }
+
+        private Vector3 ApparentWind()
+        {
+            return Wind.currentWind - (shipRigidbody != null ? shipRigidbody.velocity : Vector3.zero);
+        }
+
+        private float GetApparentWindAngle()
+        {
+            Vector3 reference = shipRigidbody != null && shipRigidbody.velocity.sqrMagnitude > 0.01f
+                ? -shipRigidbody.velocity
+                : boat != null ? -boat.forward : Vector3.back;
+
+            return NormalizeHeading180(Vector3.SignedAngle(reference, ApparentWind(), -Vector3.up));
         }
 
         private void ResetPid()
@@ -470,17 +611,40 @@ namespace SailMaster
             return heading;
         }
 
-        [Serializable]
-        private class CoordinateListJson
+        public static float CalculateGlobeDistanceNm(Vector2 from, Vector2 to)
         {
-            public CoordinatePathPointJson[] path = new CoordinatePathPointJson[0];
+            float averageLatitudeRadians = ((from.y + to.y) * 0.5f) * Mathf.Deg2Rad;
+            float latitudeNm = (to.y - from.y) * nauticalMilesPerDegreeLatitude;
+            float longitudeNm = (to.x - from.x) * nauticalMilesPerDegreeLatitude * Mathf.Cos(averageLatitudeRadians);
+            return Mathf.Sqrt((latitudeNm * latitudeNm) + (longitudeNm * longitudeNm));
         }
 
-        [Serializable]
-        private class CoordinatePathPointJson
+        private static bool IsFinite(float value)
         {
-            public float[] pos = new float[0];
-            public string colour = string.Empty;
+            return !float.IsNaN(value) && !float.IsInfinity(value);
+        }
+
+        private static int GetArrayCount(JObject root, string propertyName)
+        {
+            return root[propertyName] is JArray array ? array.Count : 0;
+        }
+
+        private static bool TryGetFloat(JToken token, out float value)
+        {
+            value = 0f;
+            if (token == null)
+            {
+                return false;
+            }
+
+            if (token.Type == JTokenType.Float || token.Type == JTokenType.Integer)
+            {
+                value = token.Value<float>();
+                return true;
+            }
+
+            return token.Type == JTokenType.String
+                && float.TryParse(token.Value<string>(), NumberStyles.Float, CultureInfo.InvariantCulture, out value);
         }
     }
 }

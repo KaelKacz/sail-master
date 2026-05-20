@@ -19,12 +19,13 @@ namespace SailMaster
         private const float raiseLowerRowHeight = 32f;
         private const float trimHeaderHeight = 26f;
         private const float trimControlHeight = 24f;
-        private const float navigationContentHeight = 430f;
+        private const float navigationContentHeight = 620f;
         private const float rowBoxPaddingHeight = 10f;
         private const float sliderLayoutHeight = 24f;
         private const float sliderVisualHeight = 16f;
         private static readonly Color windowBackgroundColor = new Color(0.25f, 0.25f, 0.25f, 0.95f);
         private static readonly Color sailRowColor = new Color(0.14f, 0.14f, 0.14f, 0.95f);
+        private static readonly Color groupedSailRowColor = new Color(0.34f, 0.34f, 0.34f, 0.95f);
         private static readonly string[] tabLabels = { "Raise/Lower", "Trim", "Navigation" };
 
         private readonly HashSet<SailMasterControlSail>[] groups = new HashSet<SailMasterControlSail>[groupCount];
@@ -46,6 +47,10 @@ namespace SailMaster
         private string headingInput = string.Empty;
         private string routeJsonInput = string.Empty;
         private string navigationMessage = string.Empty;
+        private readonly List<Vector2> routePreviewWaypoints = new List<Vector2>();
+        private Vector2 routePreviewScroll;
+        private string lastParsedRouteJson = string.Empty;
+        private int selectedRouteWaypointIndex;
 
         public bool Visible
         {
@@ -487,10 +492,10 @@ namespace SailMaster
 
             GUILayout.BeginVertical(GUI.skin.box);
             GUILayout.Label($"Heading {navigation.CurrentHeading:F0} deg    Rudder {navigation.RudderAngle:F0} deg");
+            GUILayout.Label($"Boat speed {navigation.BoatSpeedKnots:F1} kt    True wind {navigation.TrueWindSpeed:F1} kt @ {navigation.TrueWindDirection:F0} deg");
+            GUILayout.Label($"Apparent wind {navigation.ApparentWindSpeed:F1} kt    Angle {navigation.ApparentWindAngle:F0} deg");
             GUILayout.Label($"Mode: {GetNavigationModeLabel(navigation)}");
             GUILayout.Label(navigation.Status);
-            GUILayout.Label(navigation.DebugStatus);
-            GUILayout.Label($"Log {navigation.DebugLogPath}");
             GUILayout.EndVertical();
 
             GUILayout.Space(8f);
@@ -521,12 +526,19 @@ namespace SailMaster
 
             GUILayout.Label($"{navigation.CurrentRudderInput:P0}", GUILayout.Width(50f));
             GUILayout.EndHorizontal();
+            GUILayout.BeginHorizontal();
             GUILayout.Label($"Target {navigation.TargetRudderInput:P0}");
+            GUILayout.FlexibleSpace();
+            if (GUILayout.Button(navigation.HelmLocked ? "Unlock Helm" : "Lock Helm", GUILayout.Width(100f)))
+            {
+                navigation.ToggleHelmLock();
+            }
+            GUILayout.EndHorizontal();
             GUILayout.EndVertical();
 
             GUILayout.Space(8f);
             GUILayout.BeginVertical(GUI.skin.box);
-            GUILayout.Label("Heading Lock");
+            GUILayout.Label("Heading Mode");
             GUILayout.BeginHorizontal();
             GUILayout.Label("Heading", GUILayout.Width(60f));
             if (string.IsNullOrWhiteSpace(headingInput))
@@ -540,31 +552,31 @@ namespace SailMaster
                 headingInput = navigation.CurrentHeading.ToString("F0", CultureInfo.InvariantCulture);
             }
 
-            if (GUILayout.Button("Lock", GUILayout.Width(70f)))
-            {
-                if (float.TryParse(headingInput, NumberStyles.Float, CultureInfo.InvariantCulture, out float heading))
-                {
-                    navigation.EnableHeadingLock(heading);
-                    navigationMessage = $"Heading lock enabled at {navigation.TargetHeading:F0} deg.";
-                }
-                else
-                {
-                    navigationMessage = "Enter a numeric heading.";
-                }
-            }
-
             if (GUILayout.Button("Port", GUILayout.Width(70f)))
             {
                 navigation.NudgeHeadingLock(-5f);
                 headingInput = navigation.TargetHeading.ToString("F0", CultureInfo.InvariantCulture);
-                navigationMessage = $"Heading lock nudged to {navigation.TargetHeading:F0} deg.";
+                navigationMessage = $"Heading mode nudged to {navigation.TargetHeading:F0} deg.";
             }
 
             if (GUILayout.Button("Starboard", GUILayout.Width(82f)))
             {
                 navigation.NudgeHeadingLock(5f);
                 headingInput = navigation.TargetHeading.ToString("F0", CultureInfo.InvariantCulture);
-                navigationMessage = $"Heading lock nudged to {navigation.TargetHeading:F0} deg.";
+                navigationMessage = $"Heading mode nudged to {navigation.TargetHeading:F0} deg.";
+            }
+
+            if (GUILayout.Button("Enable", GUILayout.Width(70f)))
+            {
+                if (float.TryParse(headingInput, NumberStyles.Float, CultureInfo.InvariantCulture, out float heading))
+                {
+                    navigation.EnableHeadingLock(heading);
+                    navigationMessage = $"Heading mode enabled at {navigation.TargetHeading:F0} deg.";
+                }
+                else
+                {
+                    navigationMessage = "Enter a numeric heading.";
+                }
             }
 
             if (GUILayout.Button("Stop", GUILayout.Width(70f)))
@@ -580,23 +592,44 @@ namespace SailMaster
             GUILayout.Space(8f);
             GUILayout.BeginVertical(GUI.skin.box);
             GUILayout.Label("Coordinate Route JSON");
+            GUILayout.Label("Paste a Sailwind Interactive Map export. Route points must be path entries with colour \"orangepoint\" and pos [longitude, latitude].");
             routeJsonInput = GUILayout.TextArea(routeJsonInput, GUILayout.Height(120f));
             GUILayout.BeginHorizontal();
+            if (GUILayout.Button("Validate", GUILayout.Width(80f)))
+            {
+                RefreshRoutePreview();
+            }
+
             if (GUILayout.Button("Start Route", GUILayout.Width(100f)))
             {
-                navigation.StartRouteFromJson(routeJsonInput, out navigationMessage);
+                if (EnsureRoutePreviewCurrent())
+                {
+                    selectedRouteWaypointIndex = Mathf.Clamp(selectedRouteWaypointIndex, 0, routePreviewWaypoints.Count - 1);
+                    navigation.StartRouteFromJson(routeJsonInput, selectedRouteWaypointIndex, out navigationMessage);
+                }
+            }
+
+            if (GUILayout.Button("Stop Route", GUILayout.Width(90f)))
+            {
+                navigation.StopNavigation();
+                navigationMessage = "Route stopped.";
             }
 
             if (GUILayout.Button("Clear", GUILayout.Width(70f)))
             {
                 routeJsonInput = string.Empty;
                 navigationMessage = string.Empty;
+                routePreviewWaypoints.Clear();
+                lastParsedRouteJson = string.Empty;
+                selectedRouteWaypointIndex = 0;
             }
 
             GUILayout.Label(navigation.RouteActive
                 ? $"Waypoint {navigation.CurrentWaypointNumber}/{navigation.WaypointCount}"
                 : "Route idle");
             GUILayout.EndHorizontal();
+            DrawRoutePreview(navigation);
+            DrawRouteCoordinates(navigation);
             GUILayout.EndVertical();
 
             GUILayout.Space(8f);
@@ -610,14 +643,83 @@ namespace SailMaster
         private static string GetNavigationModeLabel(SailMasterNavigationController navigation)
         {
             if (navigation.RouteActive) return "Route";
-            if (navigation.HeadingLockActive) return "Heading Lock";
+            if (navigation.HeadingLockActive) return "Heading Mode";
             if (navigation.ManualRudderActive) return "Manual Rudder";
             return "Idle";
         }
 
+        private static void DrawRouteCoordinates(SailMasterNavigationController navigation)
+        {
+            Vector2 coordinates = navigation.Coordinates;
+            GUILayout.Label($"Current coords: {coordinates.x:F4}, {coordinates.y:F4}");
+            if (!navigation.HasCurrentWaypoint)
+            {
+                return;
+            }
+
+            Vector2 waypoint = navigation.CurrentWaypoint;
+            string label = navigation.RouteActive
+                ? $"Active waypoint {navigation.CurrentWaypointNumber}/{navigation.WaypointCount}"
+                : $"Loaded waypoint {navigation.CurrentWaypointNumber}/{navigation.WaypointCount}";
+            GUILayout.Label($"{label}: {waypoint.x:F4}, {waypoint.y:F4}    Distance {navigation.CurrentWaypointDistanceNm:F2} nm");
+        }
+
+        private bool EnsureRoutePreviewCurrent()
+        {
+            if (routePreviewWaypoints.Count > 0 && routeJsonInput == lastParsedRouteJson)
+            {
+                return true;
+            }
+
+            return RefreshRoutePreview();
+        }
+
+        private bool RefreshRoutePreview()
+        {
+            routePreviewWaypoints.Clear();
+            lastParsedRouteJson = string.Empty;
+            if (!SailMasterNavigationController.TryGetRouteWaypoints(routeJsonInput, out List<Vector2> waypoints, out navigationMessage))
+            {
+                selectedRouteWaypointIndex = 0;
+                return false;
+            }
+
+            routePreviewWaypoints.AddRange(waypoints);
+            lastParsedRouteJson = routeJsonInput;
+            selectedRouteWaypointIndex = Mathf.Clamp(selectedRouteWaypointIndex, 0, routePreviewWaypoints.Count - 1);
+            return true;
+        }
+
+        private void DrawRoutePreview(SailMasterNavigationController navigation)
+        {
+            if (routePreviewWaypoints.Count == 0)
+            {
+                return;
+            }
+
+            GUILayout.Space(4f);
+            GUILayout.Label($"Start next from waypoint {selectedRouteWaypointIndex + 1}/{routePreviewWaypoints.Count}");
+            routePreviewScroll = GUILayout.BeginScrollView(routePreviewScroll, GUILayout.Height(92f));
+            Vector2 currentCoordinates = navigation.Coordinates;
+            for (int i = 0; i < routePreviewWaypoints.Count; i++)
+            {
+                Vector2 waypoint = routePreviewWaypoints[i];
+                float distanceNm = SailMasterNavigationController.CalculateGlobeDistanceNm(currentCoordinates, waypoint);
+                bool selected = GUILayout.Toggle(
+                    selectedRouteWaypointIndex == i,
+                    $"{i + 1}: {waypoint.x:F4}, {waypoint.y:F4} ({distanceNm:F2} nm)",
+                    GUI.skin.button);
+                if (selected)
+                {
+                    selectedRouteWaypointIndex = i;
+                }
+            }
+            GUILayout.EndScrollView();
+        }
+
         private void DrawSailRow(SailMasterControlSail sail, int rowIndex)
         {
-            BeginSailRow(rowIndex);
+            BeginSailRow(sail);
             GUILayout.BeginHorizontal();
 
             DrawGroupMembershipToggle(sail);
@@ -648,7 +750,7 @@ namespace SailMaster
 
         private void DrawTrimRow(SailMasterControlSail sail, int rowIndex)
         {
-            BeginSailRow(rowIndex);
+            BeginSailRow(sail);
             GUILayout.BeginVertical();
 
             GUILayout.BeginHorizontal();
@@ -676,12 +778,12 @@ namespace SailMaster
             EndSailRow();
         }
 
-        private void BeginSailRow(int rowIndex)
+        private void BeginSailRow(SailMasterControlSail sail)
         {
-            Color previousColor = GUI.color;
-            GUI.color = sailRowColor;
+            Color previousBackgroundColor = GUI.backgroundColor;
+            GUI.backgroundColor = groups[selectedGroup].Contains(sail) ? groupedSailRowColor : sailRowColor;
             GUILayout.BeginVertical(GUI.skin.box);
-            GUI.color = previousColor;
+            GUI.backgroundColor = previousBackgroundColor;
         }
 
         private void EndSailRow()

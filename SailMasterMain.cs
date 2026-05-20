@@ -20,6 +20,9 @@ namespace SailMaster
         internal static ConfigEntry<KeyboardShortcut> group6SailsKey;
         internal static ConfigEntry<KeyboardShortcut> toggleGuiKey;
         internal static ConfigEntry<float> hoistingSpeed;
+        internal static ConfigEntry<float> navigationKp;
+        internal static ConfigEntry<float> navigationKi;
+        internal static ConfigEntry<float> navigationKd;
         internal static ConfigEntry<bool> showGuiOnStart;
 
         private SailMasterGui gui;
@@ -37,6 +40,9 @@ namespace SailMaster
             group6SailsKey = Config.Bind("Hotkeys", "Group 6", new KeyboardShortcut(KeyCode.Alpha6), "Raise or lower SailMaster group 6.");
             toggleGuiKey = Config.Bind("Hotkeys", "Toggle GUI", new KeyboardShortcut(KeyCode.F7), "Show or hide the SailMaster control panel.");
             hoistingSpeed = Config.Bind("Behavior", "Hoisting Speed", 0.005f, "Amount the reefing rope changes per frame while raising or lowering.");
+            navigationKp = Config.Bind("Navigation", "PID Kp", 0.03f, "Proportional steering gain for heading lock and route following.");
+            navigationKi = Config.Bind("Navigation", "PID Ki", 0.005f, "Integral steering gain for heading lock and route following.");
+            navigationKd = Config.Bind("Navigation", "PID Kd", 0.015f, "Derivative steering gain for heading lock and route following.");
             showGuiOnStart = Config.Bind("GUI", "Show On Start", false, "Show the SailMaster control panel when the game starts.");
 
             new Harmony(MyPluginInfo.PLUGIN_GUID).PatchAll();
