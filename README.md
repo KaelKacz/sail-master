@@ -2,7 +2,7 @@
 
 SailMaster is a Sailwind mod for sail and helm control from an in-game panel.
 
-It adds grouped sail hoisting/lowering, manual trim controls, live sail efficiency display, rudder controls, heading mode, and JSON route following.
+It adds grouped sail hoisting/lowering, manual and automatic trim controls, live sail efficiency display, rudder controls, heading mode, and JSON route following.
 
 ## Features
 
@@ -10,6 +10,7 @@ It adds grouped sail hoisting/lowering, manual trim controls, live sail efficien
 - Assign sails to groups from the `Raise/Lower` or `Trim` tab.
 - Set deployed amount with sliders, `Min`, and `Max` buttons.
 - Manually pull/release trim lines per sail, selected group, or all sails.
+- Enable Auto Trim for all controllable sails from the Trim tab.
 - Use trim sliders where `0%` is pulled in and `100%` is released.
 - View color-coded sail efficiency in the Trim tab.
 - Control rudder position with a slider, port/starboard nudges, and center command.
@@ -36,7 +37,7 @@ Group and all-sail controls use average deployed amount for their sliders. Click
 
 ### Trim
 
-Use this tab for manual trim. SailMaster does not auto-trim sails.
+Use this tab for manual trim or all-sail Auto Trim.
 
 Each trim slider controls rope released amount:
 

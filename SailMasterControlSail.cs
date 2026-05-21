@@ -13,6 +13,8 @@ namespace SailMaster
         private static readonly System.Reflection.FieldInfo unamplifiedSidewayForceField = AccessTools.Field(typeof(Sail), "unamplifiedSidewayForce");
         private static readonly System.Reflection.FieldInfo totalWindForceField = AccessTools.Field(typeof(Sail), "totalWindForce");
         private const float trimStep = 0.002f;
+        private const float autoTrimStep = 0.0005f;
+        private const int maxSailAngles = 50;
 
         private Sail sail;
         private RopeController hoistWinch;
@@ -22,6 +24,12 @@ namespace SailMaster
         private PurchasableBoat boat;
         private bool reverseReefing;
         private float? targetDeployedAmount;
+        private readonly Queue<float> sailAngles = new Queue<float>();
+        private float trimDirection = -1f;
+        private float oldEfficiency = 1f;
+        private int autoTrimFrame;
+
+        public static bool AutoTrimEnabled { get; private set; }
 
         public static void CommandGroup(SailCategory? category)
         {
@@ -69,6 +77,15 @@ namespace SailMaster
                 .ThenBy(controller => controller.DisplayName)
                 .ThenBy(controller => controller.GetInstanceID())
                 .ToList();
+        }
+
+        public static void SetAutoTrimEnabled(bool enabled)
+        {
+            AutoTrimEnabled = enabled;
+            foreach (var controller in controllers)
+            {
+                controller?.ResetAutoTrim();
+            }
         }
 
         private static string FormatCategoryName(SailCategory? category)
@@ -278,6 +295,11 @@ namespace SailMaster
             {
                 trimControl.MoveTowardTarget();
             }
+
+            if (AutoTrimEnabled && CanControl)
+            {
+                ApplyAutoTrim();
+            }
         }
 
         private void MoveTowardTarget()
@@ -334,6 +356,266 @@ namespace SailMaster
             }
         }
 
+        private void ApplyAutoTrim()
+        {
+            if (trimPoints.Count == 0 || boat == null) return;
+
+            bool hoisted = DeployedAmount > 0f;
+            string windSide = Vector3.SignedAngle(boat.transform.forward, sail.apparentWind, Vector3.up) < 0f
+                ? "starboard"
+                : "port";
+
+            if (hoisted)
+            {
+                if (sail.category == SailCategory.junk || sail.category == SailCategory.gaff || sail.category == SailCategory.lateen)
+                {
+                    AutoTrimForeAndAft(windSide);
+                }
+                else if (sail.category == SailCategory.staysail)
+                {
+                    AutoTrimStaysail(windSide);
+                }
+                else if (sail.category == SailCategory.square)
+                {
+                    AutoTrimSquare(windSide);
+                }
+            }
+            else
+            {
+                AutoTrimFurledSail();
+            }
+        }
+
+        private void AutoTrimForeAndAft(string windSide)
+        {
+            TrimPoint sheet = trimPoints[0];
+            bool windOnWrongSide =
+                ((windSide == "starboard" && SailDegree() < -5f) ||
+                 (windSide == "port" && SailDegree() > 5f)) &&
+                Mathf.Abs(SailDegree()) > 8f &&
+                Mathf.Abs(Vector3.SignedAngle(boat.transform.forward, sail.apparentWind, Vector3.up)) > 8f;
+
+            if (windOnWrongSide)
+            {
+                TightenSheetRope(sheet);
+            }
+            else
+            {
+                PrimitiveSailControl(sheet);
+            }
+        }
+
+        private void AutoTrimStaysail(string windSide)
+        {
+            AddAngle(SailDegree());
+            foreach (TrimPoint trimPoint in trimPoints)
+            {
+                var jib = trimPoint.Rope as RopeControllerSailAngleJib;
+                if (jib == null)
+                {
+                    PrimitiveSailControl(trimPoint);
+                }
+                else if (jib.side == RopeControllerSailAngleJib.JibWinch.left && windSide == "starboard")
+                {
+                    PrimitiveSailControl(trimPoint);
+                }
+                else if (jib.side == RopeControllerSailAngleJib.JibWinch.right && windSide == "port")
+                {
+                    PrimitiveSailControl(trimPoint);
+                }
+                else
+                {
+                    LoosenSheetRope(trimPoint);
+                }
+            }
+        }
+
+        private void AutoTrimSquare(string windSide)
+        {
+            AddAngle(SailDegree());
+            foreach (TrimPoint trimPoint in trimPoints)
+            {
+                var square = trimPoint.Rope as RopeControllerSailAngleSquare;
+                if (square == null)
+                {
+                    PrimitiveSailControl(trimPoint);
+                }
+                else if (windSide == "port" && AngleMean() < 90f)
+                {
+                    ApplySquareBrace(trimPoint, square.side, loosenLeft: true);
+                }
+                else if (windSide == "starboard" && AngleMean() > 90f)
+                {
+                    ApplySquareBrace(trimPoint, square.side, loosenLeft: false);
+                }
+                else if (square.side == RopeControllerSailAngleSquare.WinchSide.left && windSide == "port")
+                {
+                    PrimitiveSailControl(trimPoint);
+                }
+                else if (square.side == RopeControllerSailAngleSquare.WinchSide.right && windSide == "starboard")
+                {
+                    PrimitiveSailControl(trimPoint);
+                }
+                else
+                {
+                    LoosenSheetRope(trimPoint);
+                }
+            }
+        }
+
+        private void ApplySquareBrace(TrimPoint trimPoint, RopeControllerSailAngleSquare.WinchSide side, bool loosenLeft)
+        {
+            bool isLeft = side == RopeControllerSailAngleSquare.WinchSide.left;
+            if (isLeft == loosenLeft)
+            {
+                LoosenSheetRope(trimPoint);
+            }
+            else
+            {
+                TightenSheetRope(trimPoint);
+            }
+        }
+
+        private void AutoTrimFurledSail()
+        {
+            if (sail.category == SailCategory.junk || sail.category == SailCategory.gaff || sail.category == SailCategory.lateen)
+            {
+                TightenSheetRope(trimPoints[0]);
+            }
+            else if (sail.category == SailCategory.staysail)
+            {
+                foreach (TrimPoint trimPoint in trimPoints)
+                {
+                    LoosenSheetRope(trimPoint);
+                }
+            }
+            else if (sail.category == SailCategory.square)
+            {
+                AddAngle(SailDegree());
+                foreach (TrimPoint trimPoint in trimPoints)
+                {
+                    var square = trimPoint.Rope as RopeControllerSailAngleSquare;
+                    if (square == null) continue;
+
+                    if (AngleMean() < 85f)
+                    {
+                        ApplySquareBrace(trimPoint, square.side, loosenLeft: true);
+                    }
+                    else if (AngleMean() > 95f)
+                    {
+                        ApplySquareBrace(trimPoint, square.side, loosenLeft: false);
+                    }
+                }
+            }
+        }
+
+        private float SailDegree()
+        {
+            Vector3 boatVector = boat.transform.forward;
+            Vector3 sailVector = sail.squareSail ? sail.transform.up : sail.transform.right;
+            return Vector3.SignedAngle(boatVector, sailVector, Vector3.up);
+        }
+
+        private float CombinedEfficiency()
+        {
+            float totalWindForce = GetTotalWindForce();
+            if (Mathf.Approximately(totalWindForce, 0f)) return 0f;
+
+            float efficiency = (float)unamplifiedForwardForceField.GetValue(sail) / totalWindForce * 100f;
+            if (efficiency <= 0f) return efficiency;
+
+            float inefficiency = Mathf.Abs((float)unamplifiedSidewayForceField.GetValue(sail) / totalWindForce * 100f);
+            return ((3f * efficiency) + (100f - inefficiency)) / 4f;
+        }
+
+        private void PrimitiveSailControl(TrimPoint trimPoint)
+        {
+            trimPoint.ApplyAutoTrimVisualInput(-trimDirection * 5f);
+            if (autoTrimFrame == 20)
+            {
+                autoTrimFrame = 0;
+                float efficiency = CombinedEfficiency();
+                if (oldEfficiency > efficiency)
+                {
+                    trimDirection *= -1f;
+                }
+
+                oldEfficiency = efficiency;
+            }
+
+            if (sail.category == SailCategory.staysail)
+            {
+                if (AngleStandardDeviation() > 0.5f)
+                {
+                    trimDirection = -1f;
+                    autoTrimFrame = 0;
+                    TightenSheetRope(trimPoint);
+                    return;
+                }
+            }
+            else if (sail.category == SailCategory.square)
+            {
+                if (Mathf.Approximately(CombinedEfficiency(), 0f))
+                {
+                    trimDirection = 1f;
+                    autoTrimFrame = 0;
+                }
+            }
+            else if (Mathf.Approximately(CombinedEfficiency(), 0f))
+            {
+                trimDirection = -1f;
+                autoTrimFrame = 0;
+                TightenSheetRope(trimPoint);
+                return;
+            }
+
+            trimPoint.ApplyAutoTrimDelta(trimDirection * autoTrimStep);
+            autoTrimFrame++;
+        }
+
+        private static void LoosenSheetRope(TrimPoint trimPoint)
+        {
+            trimPoint.ApplyAutoTrimVisualInput(-5f);
+            trimPoint.ApplyAutoTrimDelta(4f * autoTrimStep);
+        }
+
+        private static void TightenSheetRope(TrimPoint trimPoint)
+        {
+            trimPoint.ApplyAutoTrimVisualInput(5f);
+            trimPoint.ApplyAutoTrimDelta(-4f * autoTrimStep);
+        }
+
+        private void AddAngle(float angle)
+        {
+            sailAngles.Enqueue(angle);
+            while (sailAngles.Count > maxSailAngles)
+            {
+                sailAngles.Dequeue();
+            }
+        }
+
+        private float AngleStandardDeviation()
+        {
+            if (sailAngles.Count == 0) return 0f;
+
+            float mean = AngleMean();
+            float sumSq = sailAngles.Sum(value => (value - mean) * (value - mean));
+            return Mathf.Sqrt(sumSq / sailAngles.Count);
+        }
+
+        private float AngleMean()
+        {
+            return sailAngles.Count == 0 ? 0f : sailAngles.Average();
+        }
+
+        private void ResetAutoTrim()
+        {
+            sailAngles.Clear();
+            trimDirection = -1f;
+            oldEfficiency = 1f;
+            autoTrimFrame = 0;
+        }
+
         public class TrimPoint
         {
             private readonly GPButtonRopeWinch button;
@@ -350,6 +632,8 @@ namespace SailMaster
             public string Label { get; private set; }
 
             public float Amount => button == null || button.rope == null ? 0f : Mathf.Clamp01(button.rope.currentLength);
+
+            internal RopeController Rope => button == null ? null : button.rope;
 
             internal void SetLabel(string label)
             {
@@ -410,6 +694,22 @@ namespace SailMaster
 
                 button.rope.currentLength = Mathf.Clamp01(button.rope.currentLength);
                 button.rope.changed = true;
+            }
+
+            internal void ApplyAutoTrimDelta(float delta)
+            {
+                if (button == null || button.rope == null) return;
+
+                button.rope.currentLength = Mathf.Clamp01(button.rope.currentLength + delta);
+                button.rope.changed = true;
+            }
+
+            internal void ApplyAutoTrimVisualInput(float input)
+            {
+                if (button == null) return;
+
+                Traverse.Create(button).Field("currentInput").SetValue(input);
+                button.ApplyRotation();
             }
 
         }

@@ -515,6 +515,8 @@ namespace SailMaster
 
         private void DrawTrimTab(List<SailMasterControlSail> sails)
         {
+            DrawAutoTrimControl();
+            GUILayout.Space(8f);
             DrawGroupTrimControls();
 
             GUILayout.Space(8f);
@@ -527,6 +529,21 @@ namespace SailMaster
 
             GUILayout.Space(8f);
             DrawAllTrimControls(sails);
+        }
+
+        private void DrawAutoTrimControl()
+        {
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("Auto Trim", GUILayout.Width(82f));
+            string label = SailMasterControlSail.AutoTrimEnabled ? "Disable" : "Enable";
+            if (GUILayout.Button(label, GUILayout.Width(80f)))
+            {
+                SailMasterControlSail.SetAutoTrimEnabled(!SailMasterControlSail.AutoTrimEnabled);
+            }
+
+            GUILayout.Label(SailMasterControlSail.AutoTrimEnabled ? "Auto trim enabled for all sails." : "Auto trim disabled.");
+            GUILayout.FlexibleSpace();
+            GUILayout.EndHorizontal();
         }
 
         private void DrawGroupTrimControls()
