@@ -16,7 +16,7 @@ It adds grouped sail hoisting/lowering, manual and automatic trim controls, live
 - Control rudder position with a slider, port/starboard nudges, and center command.
 - Lock/unlock the helm from the Navigation tab.
 - Use heading mode with configurable PID gains.
-- Follow Sailwind Interactive Map / CoordinateViewer-style JSON routes.
+- Follow Sailwind Interactive Map JSON routes.
 - Hold right mouse while the SailMaster panel is open to rotate the camera.
 
 ## Default Hotkeys
@@ -25,7 +25,7 @@ It adds grouped sail hoisting/lowering, manual and automatic trim controls, live
 - `1`-`6`: raise/lower SailMaster group 1-6
 - `F7`: show/hide the SailMaster panel
 
-Hotkeys can be changed in the BepInEx config file.
+Hotkeys can be changed in the BepInEx config file or Configuration Manager.
 
 ## Panel Tabs
 
