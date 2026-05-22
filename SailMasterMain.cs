@@ -27,6 +27,8 @@ namespace SailMaster
         internal static ConfigEntry<bool> showGuiOnStart;
         internal static ConfigEntry<bool> timingProfilerLog;
         internal static ConfigEntry<float> timingProfilerIntervalSeconds;
+        internal static ConfigEntry<int> simulatedSailRows;
+        internal static ConfigEntry<int> simulatedTrimControlsPerSail;
 
         private SailMasterGui gui;
 
@@ -50,6 +52,8 @@ namespace SailMaster
             showGuiOnStart = Config.Bind("GUI", "Show On Start", false, "Show the SailMaster control panel when the game starts.");
             timingProfilerLog = Config.Bind("Debug", "Timing Profiler Log", false, "Log aggregated SailMaster timing samples to the BepInEx log when enabled.");
             timingProfilerIntervalSeconds = Config.Bind("Debug", "Timing Profiler Interval Seconds", 5f, "Seconds between aggregated SailMaster timing reports.");
+            simulatedSailRows = Config.Bind("Debug", "Simulated Sail Rows", 0, "Add non-interactive fake sail rows to the GUI for layout testing.");
+            simulatedTrimControlsPerSail = Config.Bind("Debug", "Simulated Trim Controls Per Sail", 1, "Trim controls shown on each simulated sail row.");
 
             new Harmony(MyPluginInfo.PLUGIN_GUID).PatchAll();
             gui = gameObject.AddComponent<SailMasterGui>();
