@@ -23,7 +23,10 @@ namespace SailMaster
         internal static ConfigEntry<float> navigationKp;
         internal static ConfigEntry<float> navigationKi;
         internal static ConfigEntry<float> navigationKd;
+        internal static ConfigEntry<float> autoTrimIntervalSeconds;
         internal static ConfigEntry<bool> showGuiOnStart;
+        internal static ConfigEntry<bool> timingProfilerLog;
+        internal static ConfigEntry<float> timingProfilerIntervalSeconds;
 
         private SailMasterGui gui;
 
@@ -40,15 +43,23 @@ namespace SailMaster
             group6SailsKey = Config.Bind("Hotkeys", "Group 6", new KeyboardShortcut(KeyCode.Alpha6), "Raise or lower SailMaster group 6.");
             toggleGuiKey = Config.Bind("Hotkeys", "Toggle GUI", new KeyboardShortcut(KeyCode.F7), "Show or hide the SailMaster control panel.");
             hoistingSpeed = Config.Bind("Behavior", "Hoisting Speed", 0.005f, "Amount the reefing rope changes per frame while raising or lowering.");
+            autoTrimIntervalSeconds = Config.Bind("Behavior", "Auto Trim Interval Seconds", 0.05f, "Seconds between auto-trim updates per sail. Set to 0 to update every frame.");
             navigationKp = Config.Bind("Navigation", "PID Kp", 0.03f, "Proportional steering gain for heading lock and route following.");
             navigationKi = Config.Bind("Navigation", "PID Ki", 0.005f, "Integral steering gain for heading lock and route following.");
             navigationKd = Config.Bind("Navigation", "PID Kd", 0.015f, "Derivative steering gain for heading lock and route following.");
             showGuiOnStart = Config.Bind("GUI", "Show On Start", false, "Show the SailMaster control panel when the game starts.");
+            timingProfilerLog = Config.Bind("Debug", "Timing Profiler Log", false, "Log aggregated SailMaster timing samples to the BepInEx log when enabled.");
+            timingProfilerIntervalSeconds = Config.Bind("Debug", "Timing Profiler Interval Seconds", 5f, "Seconds between aggregated SailMaster timing reports.");
 
             new Harmony(MyPluginInfo.PLUGIN_GUID).PatchAll();
             gui = gameObject.AddComponent<SailMasterGui>();
             gui.Visible = showGuiOnStart.Value;
             Logger.LogInfo("SailMaster loaded.");
+        }
+
+        private void Update()
+        {
+            SailMasterProfiler.MaybeReport(Time.unscaledTime);
         }
     }
 }

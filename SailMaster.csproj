@@ -35,6 +35,7 @@
 
   <ItemGroup>
     <Compile Include="SailMasterMain.cs" />
+    <Compile Include="SailMasterProfiler.cs" />
     <Compile Include="SailMasterPatches.cs" />
     <Compile Include="SailMasterControlSail.cs" />
     <Compile Include="SailMasterNavigationController.cs" />

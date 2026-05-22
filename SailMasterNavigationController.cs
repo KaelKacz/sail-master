@@ -1,9 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
-using System.IO;
 using System.Linq;
-using BepInEx;
+using System.Reflection;
 using HarmonyLib;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
@@ -17,12 +16,17 @@ namespace SailMaster
         private const float metersPerSecondToKnots = 1.94384f;
         private const float nauticalMilesPerDegreeLatitude = 60f;
         private const float headingUpdateInterval = 0.05f;
-        private const float debugLogInterval = 1f;
         private const float steeringWheelResolveInterval = 2f;
         private const float manualWheelInputSpeed = 90f;
         private const string routePointColor = "orangepoint";
 
         private static readonly List<SailMasterNavigationController> controllers = new List<SailMasterNavigationController>();
+        private static readonly FieldInfo steeringWheelRudderField = AccessTools.Field(typeof(GPButtonSteeringWheel), "rudder");
+        private static readonly FieldInfo steeringWheelLockedField = AccessTools.Field(typeof(GPButtonSteeringWheel), "locked");
+        private static readonly MethodInfo applyRudderRotationMethod = AccessTools.Method(typeof(GPButtonSteeringWheel), "ApplyRudderRotation");
+        private static readonly MethodInfo applyWheelRotationFromRudderMethod = AccessTools.Method(typeof(GPButtonSteeringWheel), "ApplyWheelRotationFromRudder");
+        private static readonly MethodInfo lockMethod = AccessTools.Method(typeof(GPButtonSteeringWheel), "Lock");
+        private static readonly MethodInfo unlockMethod = AccessTools.Method(typeof(GPButtonSteeringWheel), "Unlock");
 
         private Transform boat;
         private Rigidbody shipRigidbody;
@@ -34,10 +38,8 @@ namespace SailMaster
         private float targetHeading;
         private float targetRudderInput;
         private float targetRudderAngle;
-        private float lastWrittenInput;
         private float manualRudderWheelTargetReachedTime;
         private float nextSteeringWheelResolveTime;
-        private float nextDebugLogTime;
         private bool headingLockActive;
         private bool routeActive;
         private bool manualRudderActive;
@@ -48,8 +50,6 @@ namespace SailMaster
         private float lastError;
         private float lastTime;
         private string status = "Navigation controller ready.";
-        private static bool debugLogSessionStarted;
-        private static readonly string debugLogPath = Path.Combine(Paths.BepInExRootPath, "SailMasterNavigationDebug.log");
 
         public bool CanControl { get; private set; }
         public bool IsReady => rudder != null && steeringWheel != null && boat != null;
@@ -82,7 +82,6 @@ namespace SailMaster
         public float ApparentWindSpeed => ApparentWind().magnitude;
         public float ApparentWindAngle => GetApparentWindAngle();
         public string DebugStatus => $"Ready {IsReady}  Can {CanControl}  Input {(steeringWheel != null ? steeringWheel.currentInput : 0f):F1}  Max {currentInputMax:F1}";
-        public string DebugLogPath => debugLogPath;
         private float MaxRudderAngle => rudderJoint != null ? Mathf.Max(1f, Mathf.Abs(rudderJoint.limits.max)) : 0f;
 
         private void Awake()
@@ -90,7 +89,6 @@ namespace SailMaster
             rudder = GetComponent<Rudder>();
             if (rudder == null) return;
 
-            StartDebugLogSession();
             ResolveSteeringWheel();
             controllers.Add(this);
         }
@@ -102,40 +100,41 @@ namespace SailMaster
 
         private void Update()
         {
-            if (!ResolveSteeringWheel()) return;
+            using (SailMasterProfiler.Scope("SailMaster/Navigation/Update"))
+            {
+                if (!ResolveSteeringWheel()) return;
 
-            UpdateCanControl();
-            if (!CanControl)
-            {
-                ReleaseSteeringWheel();
-                return;
-            }
+                UpdateCanControl();
+                if (!CanControl)
+                {
+                    ReleaseSteeringWheel();
+                    return;
+                }
 
-            if (routeActive)
-            {
-                UpdateRouteTarget();
-            }
+                if (routeActive)
+                {
+                    using (SailMasterProfiler.Scope("SailMaster/Navigation/RouteTarget"))
+                    {
+                        UpdateRouteTarget();
+                    }
+                }
 
-            if (headingLockActive || routeActive)
-            {
-                LockSteeringWheel();
-                ApplySteering(BoatHeading(), targetHeading);
-            }
-            else if (manualRudderActive)
-            {
-                LockSteeringWheel();
-                ApplyRudderTarget();
-            }
-            else
-            {
-                ReleaseSteeringWheel();
-            }
+                if (headingLockActive || routeActive)
+                {
+                    LockSteeringWheel();
+                    ApplySteering(BoatHeading(), targetHeading);
+                }
+                else if (manualRudderActive)
+                {
+                    LockSteeringWheel();
+                    ApplyRudderTarget();
+                }
+                else
+                {
+                    ReleaseSteeringWheel();
+                }
 
-            if (headingLockActive || routeActive || manualRudderActive)
-            {
-                WriteDebugLogThrottled();
             }
-
         }
 
         private bool ResolveSteeringWheel()
@@ -170,14 +169,13 @@ namespace SailMaster
             nextSteeringWheelResolveTime = Time.time + steeringWheelResolveInterval;
             foreach (var button in FindObjectsOfType<GPButtonSteeringWheel>())
             {
-                var buttonRudder = Traverse.Create(button).Field("rudder").GetValue() as Rudder;
+                var buttonRudder = steeringWheelRudderField?.GetValue(button) as Rudder;
                 if (buttonRudder != rudder) continue;
 
                 steeringWheel = button;
                 rudderJoint = button.attachedRudder != null ? button.attachedRudder : rudder.GetComponent<HingeJoint>();
                 RefreshCurrentInputMax();
                 RefreshRelatedSteeringWheels();
-                WriteDebugLog("resolved steering wheel");
                 break;
             }
 
@@ -213,7 +211,6 @@ namespace SailMaster
             headingLockActive = false;
             routeActive = false;
             status = $"Manual rudder target {targetRudderInput:P0}.";
-            WriteDebugLog($"manual rudder target set input={targetRudderInput:F3} targetAngle={targetRudderAngle:F2}");
         }
 
         public void CenterRudder()
@@ -268,7 +265,6 @@ namespace SailMaster
             }
 
             status = "Navigation stopped.";
-            WriteDebugLog("navigation stopped");
         }
 
         public void EnableHeadingLock(float heading)
@@ -279,7 +275,6 @@ namespace SailMaster
             manualRudderActive = false;
             ResetPid();
             status = $"Heading lock {NormalizeHeading360(targetHeading):F0} deg.";
-            WriteDebugLog($"heading lock target={targetHeading:F2}");
         }
 
         public bool StartRouteFromJson(string json, out string message)
@@ -312,7 +307,6 @@ namespace SailMaster
             UpdateRouteTarget();
             message = $"Route started at waypoint {waypointIndex + 1}/{waypoints.Count}.";
             status = message;
-            WriteDebugLog(message);
             return true;
         }
 
@@ -509,7 +503,6 @@ namespace SailMaster
                 manualRudderActive = false;
                 ReleaseSteeringWheel();
                 status = rudderAtTarget ? "Manual rudder target reached." : "Manual rudder wheel target reached.";
-                WriteDebugLog(rudderAtTarget ? "manual rudder target reached" : "manual rudder wheel target reached");
             }
         }
 
@@ -518,66 +511,18 @@ namespace SailMaster
             if (steeringWheel == null) return;
 
             steeringWheel.currentInput = RudderAngle * steeringWheel.gearRatio;
-            Traverse.Create(steeringWheel).Method("ApplyWheelRotationFromRudder").GetValue();
+            applyWheelRotationFromRudderMethod?.Invoke(steeringWheel, null);
         }
 
         private void WriteSteeringInput(float input)
         {
-            if (steeringWheel == null) return;
-
-            steeringWheel.currentInput = input;
-            lastWrittenInput = input;
-            Traverse.Create(steeringWheel).Method("ApplyRudderRotation").GetValue();
-            Traverse.Create(steeringWheel).Method("ApplyWheelRotationFromRudder").GetValue();
-        }
-
-        private static void StartDebugLogSession()
-        {
-            if (debugLogSessionStarted) return;
-
-            debugLogSessionStarted = true;
-            try
+            using (SailMasterProfiler.Scope("SailMaster/Navigation/WriteSteeringInput"))
             {
-                File.AppendAllText(debugLogPath, $"{DateTime.Now:O} --- SailMaster navigation debug session ---{Environment.NewLine}");
-            }
-            catch (Exception ex)
-            {
-                SailMasterMain.Logger?.LogWarning($"Could not start navigation debug log: {ex.Message}");
-            }
-        }
+                if (steeringWheel == null) return;
 
-        private void WriteDebugLogThrottled()
-        {
-            if (Time.time < nextDebugLogTime) return;
-
-            nextDebugLogTime = Time.time + debugLogInterval;
-            WriteDebugLog("tick");
-        }
-
-        private void WriteDebugLog(string reason)
-        {
-            try
-            {
-                string locked = steeringWheel != null
-                    ? ((bool)Traverse.Create(steeringWheel).Field("locked").GetValue()).ToString()
-                    : "n/a";
-                string wheelEuler = steeringWheel != null
-                    ? steeringWheel.transform.localEulerAngles.ToString("F2")
-                    : "n/a";
-                string springTarget = rudderJoint != null
-                    ? rudderJoint.spring.targetPosition.ToString("F2")
-                    : "n/a";
-                string line =
-                    $"{DateTime.Now:O} {reason} " +
-                    $"ready={IsReady} can={CanControl} activeManual={manualRudderActive} activeHeading={headingLockActive} activeRoute={routeActive} " +
-                    $"locked={locked} currentInput={(steeringWheel != null ? steeringWheel.currentInput : 0f):F2} lastWritten={lastWrittenInput:F2} maxInput={currentInputMax:F2} " +
-                    $"rudder={RudderAngle:F2} targetRudder={targetRudderAngle:F2} targetInput={targetRudderInput:F3} springTarget={springTarget} " +
-                    $"heading={CurrentHeading:F2} targetHeading={TargetHeading:F2} wheelEuler={wheelEuler}{Environment.NewLine}";
-                File.AppendAllText(debugLogPath, line);
-            }
-            catch (Exception ex)
-            {
-                SailMasterMain.Logger?.LogWarning($"Could not write navigation debug log: {ex.Message}");
+                steeringWheel.currentInput = input;
+                applyRudderRotationMethod?.Invoke(steeringWheel, null);
+                applyWheelRotationFromRudderMethod?.Invoke(steeringWheel, null);
             }
         }
 
@@ -590,7 +535,7 @@ namespace SailMaster
 
             if (!IsSteeringWheelLocked())
             {
-                Traverse.Create(steeringWheel).Field("locked").SetValue(true);
+                SetSteeringWheelLocked(steeringWheel, true);
             }
 
             steeringWheelLockedBySailMaster = true;
@@ -602,7 +547,7 @@ namespace SailMaster
 
             if (steeringWheelLockedBySailMaster && IsSteeringWheelLocked())
             {
-                Traverse.Create(steeringWheel).Field("locked").SetValue(false);
+                SetSteeringWheelLocked(steeringWheel, false);
             }
 
             steeringWheelLockedBySailMaster = false;
@@ -610,7 +555,7 @@ namespace SailMaster
 
         private bool IsSteeringWheelLocked()
         {
-            return steeringWheel != null && (bool)Traverse.Create(steeringWheel).Field("locked").GetValue();
+            return IsSteeringWheelLocked(steeringWheel);
         }
 
         private bool IsAnyRelatedSteeringWheelLocked()
@@ -621,7 +566,14 @@ namespace SailMaster
 
         private bool IsSteeringWheelLocked(GPButtonSteeringWheel wheel)
         {
-            return wheel != null && (bool)Traverse.Create(wheel).Field("locked").GetValue();
+            return wheel != null && steeringWheelLockedField != null && (bool)steeringWheelLockedField.GetValue(wheel);
+        }
+
+        private static void SetSteeringWheelLocked(GPButtonSteeringWheel wheel, bool locked)
+        {
+            if (wheel == null || steeringWheelLockedField == null) return;
+
+            steeringWheelLockedField.SetValue(wheel, locked);
         }
 
         private void SetRelatedSteeringWheelLocks(bool locked, bool callGameMethod)
@@ -632,13 +584,13 @@ namespace SailMaster
             GPButtonSteeringWheel soundWheel = wheels.Contains(steeringWheel) ? steeringWheel : wheels.FirstOrDefault();
             if (callGameMethod && soundWheel != null && IsSteeringWheelLocked(soundWheel) != locked)
             {
-                Traverse.Create(soundWheel).Method(locked ? "Lock" : "Unlock").GetValue();
+                (locked ? lockMethod : unlockMethod)?.Invoke(soundWheel, null);
             }
 
             foreach (GPButtonSteeringWheel wheel in wheels)
             {
                 if (wheel == null) continue;
-                Traverse.Create(wheel).Field("locked").SetValue(locked);
+                SetSteeringWheelLocked(wheel, locked);
             }
         }
 

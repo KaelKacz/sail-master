@@ -26,6 +26,7 @@ namespace SailMaster
         private const float sliderVisualHeight = 16f;
         private const float manualRudderNudgeStep = 0.1f;
         private const float headingNudgeStep = 5f;
+        private const float sailCacheRefreshInterval = 0.1f;
         private static readonly Color windowBackgroundColor = new Color(0.25f, 0.25f, 0.25f, 0.95f);
         private static readonly Color sailRowColor = new Color(0.14f, 0.14f, 0.14f, 0.95f);
         private static readonly Color groupedSailRowColor = new Color(0.30f, 0.30f, 0.30f, 0.95f);
@@ -51,9 +52,12 @@ namespace SailMaster
         private string routeJsonInput = string.Empty;
         private string navigationMessage = string.Empty;
         private readonly List<Vector2> routePreviewWaypoints = new List<Vector2>();
+        private readonly List<SailMasterControlSail> cachedControllableSails = new List<SailMasterControlSail>();
         private Vector2 routePreviewScroll;
         private string lastParsedRouteJson = string.Empty;
         private int selectedRouteWaypointIndex;
+        private int cachedSailFrame = -1;
+        private float nextSailCacheRefreshTime;
 
         public bool Visible
         {
@@ -139,30 +143,33 @@ namespace SailMaster
 
         private void OnGUI()
         {
-            if (!Visible) return;
-
-            UnlockCursor();
-            if (IsShortcutKeyDownEvent(SailMasterMain.toggleGuiKey.Value))
+            using (SailMasterProfiler.Scope("SailMaster/GUI/OnGUI"))
             {
-                Visible = false;
-                Event.current.Use();
-                return;
-            }
+                if (!Visible) return;
 
-            if (!AllowMouseLookThroughMenu())
-            {
-                GUI.Button(new Rect(0f, 0f, Screen.width, Screen.height), string.Empty, GUIStyle.none);
-            }
+                UnlockCursor();
+                if (IsShortcutKeyDownEvent(SailMasterMain.toggleGuiKey.Value))
+                {
+                    Visible = false;
+                    Event.current.Use();
+                    return;
+                }
 
-            EnsureWindowStyle();
-            EnsureSailRowStyles();
-            FitWindowToScreen();
-            ApplyMeasuredWindowHeight();
-            FitWindowToScreen();
-            windowRect = GUILayout.Window(GetInstanceID(), windowRect, DrawWindow, "SailMaster", windowStyle);
-            if (!AllowMouseLookThroughMenu())
-            {
-                Input.ResetInputAxes();
+                if (!AllowMouseLookThroughMenu())
+                {
+                    GUI.Button(new Rect(0f, 0f, Screen.width, Screen.height), string.Empty, GUIStyle.none);
+                }
+
+                EnsureWindowStyle();
+                EnsureSailRowStyles();
+                FitWindowToScreen();
+                ApplyMeasuredWindowHeight();
+                FitWindowToScreen();
+                windowRect = GUILayout.Window(GetInstanceID(), windowRect, DrawWindow, "SailMaster", windowStyle);
+                if (!AllowMouseLookThroughMenu())
+                {
+                    Input.ResetInputAxes();
+                }
             }
         }
 
@@ -308,7 +315,7 @@ namespace SailMaster
 
             if (SailMasterMain.allSailsKey.Value.IsDown())
             {
-                SailMasterControlSail.CommandSails(SailMasterControlSail.GetControllableSails(), "all");
+                SailMasterControlSail.CommandSails(GetCachedControllableSails(forceRefresh: true), "all");
                 return true;
             }
 
@@ -330,43 +337,71 @@ namespace SailMaster
 
         private void DrawWindow(int windowId)
         {
-            var sails = SailMasterControlSail.GetControllableSails();
-            PruneMissingSails(sails);
-
-            GUILayout.BeginHorizontal();
-            GUILayout.FlexibleSpace();
-            if (GUILayout.Button("Close", GUILayout.Width(70f)))
+            using (SailMasterProfiler.Scope("SailMaster/GUI/DrawWindow"))
             {
-                Visible = false;
-            }
-            GUILayout.EndHorizontal();
+                var sails = GetCachedControllableSails();
 
-            DrawGroupHeader(sails);
-            selectedTab = GUILayout.Toolbar(selectedTab, tabLabels);
+                GUILayout.BeginHorizontal();
+                GUILayout.FlexibleSpace();
+                if (GUILayout.Button("Close", GUILayout.Width(70f)))
+                {
+                    Visible = false;
+                }
+                GUILayout.EndHorizontal();
 
-            GUILayout.Space(8f);
-            if (selectedTab != 2 && sails.Count == 0)
-            {
-                GUILayout.Label("No controllable sails detected on the current ship.");
+                DrawGroupHeader(sails);
+                selectedTab = GUILayout.Toolbar(selectedTab, tabLabels);
+
+                GUILayout.Space(8f);
+                if (selectedTab != 2 && sails.Count == 0)
+                {
+                    GUILayout.Label("No controllable sails detected on the current ship.");
+                    GUI.DragWindow();
+                    return;
+                }
+
+                if (selectedTab == 0)
+                {
+                    DrawRaiseLowerTab(sails);
+                }
+                else if (selectedTab == 1)
+                {
+                    DrawTrimTab(sails);
+                }
+                else
+                {
+                    DrawNavigationTab();
+                }
+
+                MeasureWindowContentHeight();
                 GUI.DragWindow();
-                return;
+            }
+        }
+
+        private List<SailMasterControlSail> GetCachedControllableSails(bool forceRefresh = false)
+        {
+            int frame = Time.frameCount;
+            if (!forceRefresh && cachedSailFrame == frame)
+            {
+                return cachedControllableSails;
             }
 
-            if (selectedTab == 0)
+            if (!forceRefresh && Time.unscaledTime < nextSailCacheRefreshTime)
             {
-                DrawRaiseLowerTab(sails);
-            }
-            else if (selectedTab == 1)
-            {
-                DrawTrimTab(sails);
-            }
-            else
-            {
-                DrawNavigationTab();
+                cachedSailFrame = frame;
+                return cachedControllableSails;
             }
 
-            MeasureWindowContentHeight();
-            GUI.DragWindow();
+            using (SailMasterProfiler.Scope("SailMaster/GUI/RefreshSailCache"))
+            {
+                cachedControllableSails.Clear();
+                cachedControllableSails.AddRange(SailMasterControlSail.GetControllableSails());
+                PruneMissingSails(cachedControllableSails);
+            }
+
+            cachedSailFrame = frame;
+            nextSailCacheRefreshTime = Time.unscaledTime + sailCacheRefreshInterval;
+            return cachedControllableSails;
         }
 
         private void DrawGroupHeader(List<SailMasterControlSail> sails)

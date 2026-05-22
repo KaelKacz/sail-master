@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using HarmonyLib;
 using UnityEngine;
 
@@ -12,6 +13,13 @@ namespace SailMaster
         private static readonly System.Reflection.FieldInfo unamplifiedForwardForceField = AccessTools.Field(typeof(Sail), "unamplifiedForwardForce");
         private static readonly System.Reflection.FieldInfo unamplifiedSidewayForceField = AccessTools.Field(typeof(Sail), "unamplifiedSidewayForce");
         private static readonly System.Reflection.FieldInfo totalWindForceField = AccessTools.Field(typeof(Sail), "totalWindForce");
+        private static readonly FieldInfo ropeWinchCurrentInputField = AccessTools.Field(typeof(GPButtonRopeWinch), "currentInput");
+        private static readonly FieldInfo ropeControllerSailAngleField = AccessTools.Field(typeof(RopeControllerSailAngle), "sail");
+        private static readonly FieldInfo ropeControllerSailAngleJibField = AccessTools.Field(typeof(RopeControllerSailAngleJib), "sail");
+        private static readonly FieldInfo ropeControllerSailAngleSquareField = AccessTools.Field(typeof(RopeControllerSailAngleSquare), "sail");
+        private static readonly FieldInfo reverseReefingField = AccessTools.Field(typeof(RopeControllerSailReef), "reverseReefing")
+            ?? AccessTools.Field(typeof(RopeController), "reverseReefing");
+        private static readonly FieldInfo ropeWinchBoatField = AccessTools.Field(typeof(GPButtonRopeWinch), "boat");
         private const float trimStep = 0.002f;
         private const float autoTrimStep = 0.0005f;
         private const int maxSailAngles = 50;
@@ -28,6 +36,7 @@ namespace SailMaster
         private float trimDirection = -1f;
         private float oldEfficiency = 1f;
         private int autoTrimFrame;
+        private float nextAutoTrimTime;
 
         public static bool AutoTrimEnabled { get; private set; }
 
@@ -71,12 +80,15 @@ namespace SailMaster
 
         public static List<SailMasterControlSail> GetControllableSails()
         {
-            return controllers
-                .Where(controller => controller != null && controller.IsReady && controller.CanControl)
-                .OrderBy(controller => controller.CategoryName)
-                .ThenBy(controller => controller.DisplayName)
-                .ThenBy(controller => controller.GetInstanceID())
-                .ToList();
+            using (SailMasterProfiler.Scope("SailMaster/Sails/GetControllableSails"))
+            {
+                return controllers
+                    .Where(controller => controller != null && controller.IsReady && controller.CanControl)
+                    .OrderBy(controller => controller.CategoryName)
+                    .ThenBy(controller => controller.DisplayName)
+                    .ThenBy(controller => controller.GetInstanceID())
+                    .ToList();
+            }
         }
 
         public static void SetAutoTrimEnabled(bool enabled)
@@ -114,18 +126,21 @@ namespace SailMaster
         {
             get
             {
-                if (sail == null) return null;
+                using (SailMasterProfiler.Scope("SailMaster/Sails/Efficiency"))
+                {
+                    if (sail == null) return null;
 
-                float totalWindForce = GetTotalWindForce();
-                if (Mathf.Approximately(totalWindForce, 0f)) return null;
+                    float totalWindForce = GetTotalWindForce();
+                    if (Mathf.Approximately(totalWindForce, 0f)) return null;
 
-                float forwardForce = (float)unamplifiedForwardForceField.GetValue(sail);
-                float forwardPercent = Mathf.Round(forwardForce / totalWindForce * 100f);
-                if (forwardPercent <= 0f) return forwardPercent;
+                    float forwardForce = (float)unamplifiedForwardForceField.GetValue(sail);
+                    float forwardPercent = Mathf.Round(forwardForce / totalWindForce * 100f);
+                    if (forwardPercent <= 0f) return forwardPercent;
 
-                float sideForce = (float)unamplifiedSidewayForceField.GetValue(sail);
-                float sidePercent = Mathf.Abs(Mathf.Round(sideForce / totalWindForce * 100f));
-                return Mathf.Round((forwardPercent + (100f - sidePercent)) / 2f);
+                    float sideForce = (float)unamplifiedSidewayForceField.GetValue(sail);
+                    float sidePercent = Mathf.Abs(Mathf.Round(sideForce / totalWindForce * 100f));
+                    return Mathf.Round((forwardPercent + (100f - sidePercent)) / 2f);
+                }
             }
         }
 
@@ -213,8 +228,8 @@ namespace SailMaster
                 return;
             }
 
-            reverseReefing = (bool)Traverse.Create(hoistWinch).Field("reverseReefing").GetValue();
-            boat = Traverse.Create(hoistButton).Field("boat").GetValue<PurchasableBoat>();
+            reverseReefing = reverseReefingField != null && (bool)reverseReefingField.GetValue(hoistWinch);
+            boat = ropeWinchBoatField?.GetValue(hoistButton) as PurchasableBoat;
         }
 
         private static bool IsAngleWinch(RopeController rope, Sail sail)
@@ -227,7 +242,27 @@ namespace SailMaster
                 rope is RopeControllerSailAngleSquare;
             if (!isAngleWinch) return false;
 
-            return Traverse.Create(rope).Field("sail").GetValue<Sail>() == sail;
+            return ReferenceEquals(GetAngleWinchSail(rope), sail);
+        }
+
+        private static Sail GetAngleWinchSail(RopeController rope)
+        {
+            if (rope is RopeControllerSailAngleJib)
+            {
+                return ropeControllerSailAngleJibField?.GetValue(rope) as Sail;
+            }
+
+            if (rope is RopeControllerSailAngleSquare)
+            {
+                return ropeControllerSailAngleSquareField?.GetValue(rope) as Sail;
+            }
+
+            if (rope is RopeControllerSailAngle)
+            {
+                return ropeControllerSailAngleField?.GetValue(rope) as Sail;
+            }
+
+            return null;
         }
 
         private static int GetTrimPointSortOrder(RopeController rope)
@@ -284,22 +319,62 @@ namespace SailMaster
 
         private void Update()
         {
-            if (!IsReady) return;
-
-            if (targetDeployedAmount.HasValue)
+            using (SailMasterProfiler.Scope("SailMaster/Sails/Update"))
             {
-                MoveTowardTarget();
+                if (!IsReady) return;
+
+                if (targetDeployedAmount.HasValue)
+                {
+                    using (SailMasterProfiler.Scope("SailMaster/Sails/HoistTarget"))
+                    {
+                        MoveTowardTarget();
+                    }
+                }
+
+                using (SailMasterProfiler.Scope("SailMaster/Sails/TrimTargets"))
+                {
+                    foreach (var trimControl in trimControls)
+                    {
+                        trimControl.MoveTowardTarget();
+                    }
+                }
+
+                if (AutoTrimEnabled && CanControl && IsAutoTrimDue())
+                {
+                    using (SailMasterProfiler.Scope("SailMaster/Sails/AutoTrim"))
+                    {
+                        ApplyAutoTrim();
+                    }
+                }
+            }
+        }
+
+        private bool IsAutoTrimDue()
+        {
+            float interval = SailMasterMain.autoTrimIntervalSeconds?.Value ?? 0f;
+            if (interval <= 0f)
+            {
+                return true;
             }
 
-            foreach (var trimControl in trimControls)
+            float now = Time.time;
+            if (nextAutoTrimTime <= 0f)
             {
-                trimControl.MoveTowardTarget();
+                nextAutoTrimTime = now + GetAutoTrimStagger(interval);
             }
 
-            if (AutoTrimEnabled && CanControl)
+            if (now < nextAutoTrimTime)
             {
-                ApplyAutoTrim();
+                return false;
             }
+
+            nextAutoTrimTime = now + interval;
+            return true;
+        }
+
+        private float GetAutoTrimStagger(float interval)
+        {
+            return (Mathf.Abs(GetInstanceID()) % 10) * interval * 0.1f;
         }
 
         private void MoveTowardTarget()
@@ -311,7 +386,7 @@ namespace SailMaster
             ApplyDeployedAmount(next);
 
             float visualInput = next >= current ? GetLengthDirection(true) : GetLengthDirection(false);
-            Traverse.Create(hoistButton).Field("currentInput").SetValue(visualInput < 0f ? 25f : -25f);
+            SetWinchCurrentInput(hoistButton, visualInput < 0f ? 25f : -25f);
             hoistButton.ApplyRotation();
 
             if (Mathf.Approximately(next, target))
@@ -614,6 +689,13 @@ namespace SailMaster
             trimDirection = -1f;
             oldEfficiency = 1f;
             autoTrimFrame = 0;
+            float interval = SailMasterMain.autoTrimIntervalSeconds?.Value ?? 0f;
+            nextAutoTrimTime = interval > 0f ? Time.time + GetAutoTrimStagger(interval) : 0f;
+        }
+
+        private static void SetWinchCurrentInput(GPButtonRopeWinch button, float input)
+        {
+            ropeWinchCurrentInputField?.SetValue(button, input);
         }
 
         public class TrimPoint
@@ -667,7 +749,7 @@ namespace SailMaster
                 if (button == null || button.rope == null) return;
                 if (pull && !button.rope.CanPull()) return;
 
-                Traverse.Create(button).Field("currentInput").SetValue(pull ? 25f : -25f);
+                SetWinchCurrentInput(button, pull ? 25f : -25f);
                 button.ApplyRotation();
 
                 button.rope.currentLength = Mathf.Clamp01(amount);
@@ -680,7 +762,7 @@ namespace SailMaster
 
                 if (pull && !button.rope.CanPull()) return;
 
-                Traverse.Create(button).Field("currentInput").SetValue(pull ? 25f : -25f);
+                SetWinchCurrentInput(button, pull ? 25f : -25f);
                 button.ApplyRotation();
 
                 if (pull)
@@ -708,7 +790,7 @@ namespace SailMaster
             {
                 if (button == null) return;
 
-                Traverse.Create(button).Field("currentInput").SetValue(input);
+                SetWinchCurrentInput(button, input);
                 button.ApplyRotation();
             }
 
