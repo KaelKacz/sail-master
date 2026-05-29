@@ -14,6 +14,7 @@ namespace SailMaster
         private const float screenMargin = 20f;
         private const float windowScreenHeightFraction = 2f / 3f;
         private const float sailTabChromeHeight = 215f;
+        private const float navigationTabChromeHeight = 86f;
         private const float sliderLayoutHeight = 24f;
         private const float sliderVisualHeight = 16f;
         private const float manualRudderNudgeStep = 0.1f;
@@ -29,6 +30,7 @@ namespace SailMaster
         private readonly HashSet<SailMasterControlSail>[] groups = new HashSet<SailMasterControlSail>[groupCount];
         private Rect windowRect = new Rect(40f, 80f, minWindowWidth, minWindowHeight);
         private Vector2 scroll;
+        private Vector2 navigationScroll;
         private GUIStyle windowStyle;
         private GUIStyle sailRowStyle;
         private GUIStyle groupedSailRowStyle;
@@ -354,7 +356,7 @@ namespace SailMaster
                 }
                 else
                 {
-                    DrawNavigationTab();
+                    DrawScrollableNavigationTab();
                 }
 
                 GUI.DragWindow();
@@ -483,6 +485,11 @@ namespace SailMaster
             return Mathf.Max(120f, GetWindowHeight() - sailTabChromeHeight);
         }
 
+        private static float GetNavigationTabHeight()
+        {
+            return Mathf.Max(120f, GetWindowHeight() - navigationTabChromeHeight);
+        }
+
         private static float GetWindowHeight()
         {
             float maxHeight = Mathf.Max(240f, Screen.height - (screenMargin * 2f));
@@ -560,6 +567,14 @@ namespace SailMaster
             }
 
             GUILayout.EndHorizontal();
+        }
+
+        private void DrawScrollableNavigationTab()
+        {
+            float contentHeight = GetNavigationTabHeight();
+            navigationScroll = GUILayout.BeginScrollView(navigationScroll, GUILayout.MinHeight(contentHeight), GUILayout.MaxHeight(contentHeight));
+            DrawNavigationTab();
+            GUILayout.EndScrollView();
         }
 
         private void DrawNavigationTab()
